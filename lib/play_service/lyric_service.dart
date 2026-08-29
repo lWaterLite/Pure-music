@@ -1,0 +1,1743 @@
+import 'dart:async';
+import 'dart:collection';
+import 'dart:io';
+import 'dart:math' show max, min;
+
+import 'package:pure_music/library/audio_library.dart';
+import 'package:pure_music/lyric/lrc.dart';
+import 'package:pure_music/lyric/lrc_serializer.dart';
+import 'package:pure_music/lyric/lyric.dart';
+import 'package:pure_music/lyric/lyric_tag_word_format.dart';
+import 'package:pure_music/lyric/ttml.dart' show Ttml;
+import 'package:pure_music/lyric/lyric_source.dart';
+import 'package:pure_music/lyric/lyric_stripper.dart';
+import 'package:pure_music/lyric/lyric_loader.dart';
+import 'package:pure_music/core/matcher.dart' hide logger;
+import 'package:pure_music/core/settings.dart';
+import 'package:pure_music/core/utils.dart';
+import 'package:pure_music/native/bass/bass_player.dart';
+import 'package:pure_music/play_service/play_service.dart';
+import 'package:pure_music/play_service/lyric_write_prompt_history.dart';
+import 'package:pure_music/native/rust/api/tag_reader.dart';
+import 'package:flutter/foundation.dart';
+import 'package:path/path.dart' as p;
+
+const int _kLyricCacheCapacity = 32;
+const int lyricWordPreSwitchMs = 320;
+const int lyricHighlightCatchUpDurationMs = 260;
+const int lyricHighlightFinishLeadMs = 32;
+
+bool _hasDesktopLyricContent(LyricLine line) {
+  final content = switch (line) {
+    SyncLyricLine() => line.content,
+    UnsyncLyricLine() => line.content,
+    _ => null,
+  };
+  return content != null && content.trim().isNotEmpty;
+}
+
+bool isDesktopLyricTransitionLine(LyricLine line) {
+  if (line is SyncLyricLine) {
+    return line.words.isEmpty && line.length > const Duration(seconds: 3);
+  }
+  if (line is LrcLine) {
+    return line.isBlank &&
+        line.length > const Duration(seconds: 3) &&
+        line.start == Duration.zero;
+  }
+  return false;
+}
+
+class _ParallelLyricGroup {
+  const _ParallelLyricGroup(this.members, this.endMs);
+
+  final List<int> members;
+  final int endMs;
+}
+
+int _lyricLineRenderStartMs(LyricLine line) {
+  if (line is SyncLyricLine && line.words.isNotEmpty) {
+    return line.words.first.start.inMilliseconds;
+  }
+  return line.start.inMilliseconds;
+}
+
+int _lyricLineRenderEndMs(Lyric lyric, LyricLine line) {
+  var end = line.start.inMilliseconds + line.length.inMilliseconds;
+  if (line is SyncLyricLine && line.words.isNotEmpty) {
+    final lastWord = line.words.last;
+    final wordEnd =
+        lastWord.start.inMilliseconds + lastWord.length.inMilliseconds;
+    if (lyric is! Ttml) return wordEnd;
+    end = max(end, wordEnd);
+  }
+  if (lyric is Ttml && line is SyncLyricLine) {
+    if (line.bgEnd != null) {
+      end = max(end, line.bgEnd!.inMilliseconds);
+    }
+    if (line.bgWords.isNotEmpty) {
+      final lastBgWord = line.bgWords.last;
+      end = max(
+        end,
+        lastBgWord.start.inMilliseconds + lastBgWord.length.inMilliseconds,
+      );
+    }
+  }
+  return end;
+}
+
+List<_ParallelLyricGroup> _buildParallelLyricGroups({
+  required Lyric lyric,
+  required List<int> lineStartMs,
+  required List<int> lineEndMs,
+}) {
+  if (lyric is! Ttml || lineStartMs.length < 2 || lineEndMs.length < 2) {
+    return const [];
+  }
+
+  final groups = <_ParallelLyricGroup>[];
+  var members = <int>[0];
+  var sharedStart = lineStartMs.first;
+  var sharedEnd = lineEndMs.first;
+  var groupEnd = lineEndMs.first;
+
+  for (var i = 1; i < lyric.lines.length; i++) {
+    final start = lineStartMs[i];
+    final end = lineEndMs[i];
+    final sharedOverlapMs = min(sharedEnd, end) - max(sharedStart, start);
+    if (sharedOverlapMs > lyricWordPreSwitchMs) {
+      members.add(i);
+      sharedStart = max(sharedStart, start);
+      sharedEnd = min(sharedEnd, end);
+      groupEnd = max(groupEnd, end);
+      continue;
+    }
+
+    if (members.length > 1) {
+      groups.add(_ParallelLyricGroup(List.unmodifiable(members), groupEnd));
+    }
+    members = <int>[i];
+    sharedStart = start;
+    sharedEnd = end;
+    groupEnd = end;
+  }
+
+  if (members.length > 1) {
+    groups.add(_ParallelLyricGroup(List.unmodifiable(members), groupEnd));
+  }
+  return groups;
+}
+
+SyncLyricLine? desktopLyricPreludeLineAt(Lyric lyric, int positionMs) {
+  if (lyric.lines.isEmpty) return null;
+  final firstIndex = lyric.lines.indexWhere(_hasDesktopLyricContent);
+  if (firstIndex <= 0) return null;
+  for (var index = 0; index < firstIndex; index++) {
+    final line = lyric.lines[index];
+    if (!isDesktopLyricTransitionLine(line) || line.start != Duration.zero) {
+      continue;
+    }
+    final endMs = _lyricLineRenderEndMs(lyric, line);
+    if (positionMs < endMs) {
+      return SyncLyricLine(
+        Duration.zero,
+        Duration(milliseconds: endMs),
+        const [],
+      );
+    }
+  }
+  return null;
+}
+
+int lyricLineSwitchStartMs({
+  required int previousSwitchStartMs,
+  required int previousLineEndMs,
+  required int nextLineStartMs,
+  required bool preserveSingleWordTiming,
+}) {
+  var switchStart = max(
+    previousSwitchStartMs,
+    nextLineStartMs - lyricWordPreSwitchMs,
+  );
+  if (preserveSingleWordTiming) {
+    switchStart = max(switchStart, min(previousLineEndMs, nextLineStartMs));
+  }
+  return switchStart;
+}
+
+int? lyricHighlightDeadlineMsForLine(Lyric lyric, int lineIndex) {
+  final lines = lyric.lines;
+  if (lineIndex < 0 || lineIndex >= lines.length) return null;
+  final currentLine = lines[lineIndex];
+  if (lyric is! Ttml &&
+      currentLine is SyncLyricLine &&
+      currentLine.words.length == 1) {
+    return null;
+  }
+
+  bool isBlankFiltered(LyricLine line) {
+    if (line is SyncLyricLine) {
+      return line.words.isEmpty && line.length <= const Duration(seconds: 3);
+    }
+    if (line is LrcLine) {
+      return line.isBlank &&
+          (line.length <= const Duration(seconds: 3) ||
+              line.start > Duration.zero);
+    }
+    return false;
+  }
+
+  final lineStartMs = lines.map(_lyricLineRenderStartMs).toList();
+  final lineEndMs = lines
+      .map((line) => _lyricLineRenderEndMs(lyric, line))
+      .toList();
+  _ParallelLyricGroup? parallelGroup;
+  for (final group in _buildParallelLyricGroups(
+    lyric: lyric,
+    lineStartMs: lineStartMs,
+    lineEndMs: lineEndMs,
+  )) {
+    if (group.members.contains(lineIndex)) {
+      parallelGroup = group;
+      break;
+    }
+  }
+
+  for (var i = lineIndex + 1; i < lines.length; i++) {
+    if (parallelGroup?.members.contains(i) == true) continue;
+    final nextLine = lines[i];
+    if (isBlankFiltered(nextLine)) continue;
+    final nextStart = lineStartMs[i];
+    if (nextLine is SyncLyricLine && nextLine.words.isNotEmpty) {
+      return parallelGroup == null
+          ? nextStart - lyricWordPreSwitchMs
+          : max(parallelGroup.endMs, nextStart - lyricWordPreSwitchMs);
+    }
+    return nextStart;
+  }
+  return null;
+}
+
+class LyricCache {
+  final LinkedHashMap<String, Lyric> _cache = LinkedHashMap();
+
+  Lyric? get(String path) {
+    final lyric = _cache[path];
+    if (lyric != null) {
+      _cache.remove(path);
+      _cache[path] = lyric;
+    }
+    return lyric;
+  }
+
+  bool containsKey(String path) => _cache.containsKey(path);
+
+  void put(String path, Lyric lyric) {
+    if (_cache.containsKey(path)) {
+      _cache.remove(path);
+    } else if (_cache.length >= _kLyricCacheCapacity) {
+      _cache.remove(_cache.keys.first);
+    }
+    _cache[path] = lyric;
+  }
+
+  void remove(String path) {
+    _cache.remove(path);
+  }
+
+  void clear() {
+    _cache.clear();
+  }
+}
+
+final LyricCache _lyricCache = LyricCache();
+
+/// 只通知 lyric 变更
+class LyricService extends ChangeNotifier {
+  final PlayService playService;
+
+  Timer? _lineAdvanceTimer;
+  double _lastPos = 0.0;
+  Lyric? _currLyric;
+  List<int> _lineRenderStartMs = const [];
+  List<int> _lineSwitchStartMs = const [];
+  List<int> _lineEndMs = const [];
+  bool _hasOverlappingActiveLines = false;
+  int _lastEmittedLineIndex = -1;
+  int _lastDesktopLyricLineIndex = -1;
+  bool _desktopGapShown = false;
+  bool _desktopPreludeShown = false;
+  int _lyricRequestToken = 0;
+  int _prefetchGeneration = 0;
+  final Map<String, Future<Lyric?>> _lyricPrefetches = {};
+  String? _activeLyricPath;
+
+  final LyricWritePromptHistory _lyricWritePromptHistory =
+      LyricWritePromptHistory();
+  Timer? _promptTimer;
+  int _promptGeneration = 0;
+  LyricService(this.playService) {
+    playService.playbackService.playerStateNotifier.addListener(
+      _syncLineAdvanceTimer,
+    );
+    _syncLineAdvanceTimer();
+  }
+
+  void _syncLineAdvanceTimer() {
+    final isPlaying =
+        playService.playbackService.playerState == PlayerState.playing;
+    final lyric = _currLyric;
+    _lineAdvanceTimer?.cancel();
+    _lineAdvanceTimer = null;
+    if (!isPlaying || lyric == null || lyric.lines.isEmpty) {
+      return;
+    }
+    _advanceLyricLineAt(playService.playbackService.position);
+    _scheduleNextLineAdvance();
+  }
+
+  void _scheduleNextLineAdvance() {
+    if (playService.playbackService.playerState != PlayerState.playing) return;
+    final lyric = _currLyric;
+    if (lyric == null || lyric.lines.isEmpty) return;
+    final posMs = (playService.playbackService.position * 1000).round();
+    final nextBoundaryMs = _nextLyricBoundaryAfter(posMs);
+    if (nextBoundaryMs == null) return;
+    final speed = playService.playbackService.rate.value;
+    if (speed <= 0) return;
+    final delayMs = ((nextBoundaryMs - posMs) / speed).clamp(16, 1000).toInt();
+    _lineAdvanceTimer?.cancel();
+    _lineAdvanceTimer = Timer(Duration(milliseconds: delayMs), () {
+      _lineAdvanceTimer = null;
+      _advanceLyricLineAt(playService.playbackService.position);
+      _scheduleNextLineAdvance();
+    });
+  }
+
+  void _restartLineAdvanceTimer() {
+    if (playService.playbackService.playerState != PlayerState.playing) return;
+    _lineAdvanceTimer?.cancel();
+    _lineAdvanceTimer = null;
+    _scheduleNextLineAdvance();
+  }
+
+  int? _nextLyricBoundaryAfter(int posMs) {
+    int? candidate;
+    final nextStart = _lowerBoundGreater(_lineSwitchStartMs, posMs);
+    if (nextStart != -1) {
+      candidate = _lineSwitchStartMs[nextStart];
+    }
+    if (_hasOverlappingActiveLines) {
+      for (final startMs in _lineRenderStartMs) {
+        final entryMs = startMs - lyricWordPreSwitchMs;
+        if (entryMs <= posMs) continue;
+        if (candidate == null || entryMs < candidate) {
+          candidate = entryMs;
+        }
+      }
+      for (final endMs in _lineEndMs) {
+        if (endMs <= posMs) continue;
+        if (candidate == null || endMs < candidate) {
+          candidate = endMs;
+        }
+      }
+    }
+    return candidate;
+  }
+
+  void _advanceLyricLineAt(double pos) {
+    final jumped = (pos - _lastPos).abs() > 1.0;
+    _lastPos = pos;
+    final posMs = (pos * 1000).round();
+    if (jumped) {
+      findCurrLyricLineAt(pos);
+      return;
+    }
+    final lyric = _currLyric;
+    if (lyric == null) return;
+    if (_nextLyricLine >= lyric.lines.length) {
+      if (_lineSwitchStartMs.isEmpty || posMs > _lineSwitchStartMs.last) {
+        return;
+      }
+      findCurrLyricLineAt(pos);
+      return;
+    }
+    while (_nextLyricLine < _lineSwitchStartMs.length &&
+        posMs >= _lineSwitchStartMs[_nextLyricLine]) {
+      _nextLyricLine += 1;
+    }
+
+    final currLineIndex = _nextLyricLine - 1;
+    final activity = _lineActivityForSwitchPosition(currLineIndex, posMs);
+    final activeIndices = activity.activeIndices;
+    final layoutIndices = activity.layoutIndices;
+
+    // 前奏/尾奏 fallback：currLineIndex 越界时仍发射更新，UI 才知道当前位置
+    if (currLineIndex < 0) {
+      if (0 != _lastEmittedLineIndex ||
+          !listEquals(_lastEmittedActiveIndices, activeIndices) ||
+          !listEquals(_lastEmittedLayoutIndices, layoutIndices)) {
+        _lastEmittedLineIndex = 0;
+        _lastEmittedLineIndexForHint = 0;
+        _lastEmittedActiveIndices = activeIndices;
+        _lastEmittedLayoutIndices = layoutIndices;
+        _lyricLineStreamController.add(
+          LyricLineUpdate(
+            primaryIndex: 0,
+            activeIndices: activeIndices,
+            layoutIndices: layoutIndices,
+          ),
+        );
+      }
+      _sendDesktopPreludeIfNeeded(posMs);
+      return;
+    }
+    if (currLineIndex >= lyric.lines.length) {
+      final p = lyric.lines.length - 1;
+      if (p != _lastEmittedLineIndex ||
+          !listEquals(_lastEmittedActiveIndices, activeIndices) ||
+          !listEquals(_lastEmittedLayoutIndices, layoutIndices)) {
+        _lastEmittedLineIndex = p;
+        _lastEmittedLineIndexForHint = p;
+        _lastEmittedActiveIndices = activeIndices;
+        _lastEmittedLayoutIndices = layoutIndices;
+        _lyricLineStreamController.add(
+          LyricLineUpdate(
+            primaryIndex: p,
+            activeIndices: activeIndices,
+            layoutIndices: layoutIndices,
+          ),
+        );
+      }
+      return;
+    }
+    var primaryIndex = currLineIndex;
+    if (layoutIndices.isNotEmpty) {
+      // 当前行指针还未推进但下一行已激活（posMs == nextStart 的边界），
+      // 取最早激活行做 primaryIndex
+      final minActive = layoutIndices.first;
+      if (minActive != currLineIndex) {
+        primaryIndex = minActive;
+      }
+    }
+    if (primaryIndex != _lastEmittedLineIndex ||
+        !listEquals(_lastEmittedActiveIndices, activeIndices) ||
+        !listEquals(_lastEmittedLayoutIndices, layoutIndices)) {
+      _lastEmittedLineIndex = primaryIndex;
+      _lastEmittedLineIndexForHint = primaryIndex;
+      _lastEmittedActiveIndices = activeIndices;
+      _lastEmittedLayoutIndices = layoutIndices;
+      _lyricLineStreamController.add(
+        LyricLineUpdate(
+          primaryIndex: primaryIndex,
+          activeIndices: activeIndices,
+          layoutIndices: layoutIndices,
+        ),
+      );
+    }
+
+    if (primaryIndex != _lastDesktopLyricLineIndex) {
+      _lastDesktopLyricLineIndex = primaryIndex;
+      _desktopGapShown = false;
+      if (primaryIndex >= 0 &&
+          primaryIndex < lyric.lines.length &&
+          _hasDesktopLyricContent(lyric.lines[primaryIndex])) {
+        final nextLine = primaryIndex + 1 < lyric.lines.length
+            ? lyric.lines[primaryIndex + 1]
+            : null;
+        playService.desktopLyricService.canSendMessage.then((canSend) {
+          if (!canSend) return;
+          playService.desktopLyricService.sendLyricLineMessage(
+            lyric.lines[primaryIndex],
+            nextLine: nextLine,
+            isWordByWord: lyric.isWordByWord,
+            highlightDeadlineMs: lyricHighlightDeadlineMsForLine(
+              lyric,
+              primaryIndex,
+            ),
+            lineIndex: primaryIndex,
+          );
+        });
+      }
+    }
+    _sendDesktopGapIfNeeded(currLineIndex, posMs);
+  }
+
+  void _sendDesktopGapIfNeeded(int currLineIndex, int posMs) {
+    final lyric = _currLyric;
+    if (lyric == null) return;
+    if (currLineIndex < 0 || currLineIndex >= lyric.lines.length) return;
+    final transitionLine = lyric.lines[currLineIndex];
+    if (!isDesktopLyricTransitionLine(transitionLine)) {
+      _desktopGapShown = false;
+      return;
+    }
+    final transitionStart = _lyricLineRenderStartMs(transitionLine);
+    final transitionEnd = _lyricLineRenderEndMs(lyric, transitionLine);
+    if (transitionEnd <= transitionStart ||
+        posMs < transitionStart ||
+        posMs >= transitionEnd) {
+      _desktopGapShown = false;
+      return;
+    }
+    if (_desktopGapShown) return;
+    _desktopGapShown = true;
+    var nextIndex = currLineIndex + 1;
+    while (nextIndex < lyric.lines.length &&
+        !_hasDesktopLyricContent(lyric.lines[nextIndex])) {
+      nextIndex += 1;
+    }
+    final nextLine = nextIndex < lyric.lines.length
+        ? lyric.lines[nextIndex]
+        : null;
+    playService.desktopLyricService.canSendMessage.then((canSend) {
+      if (!canSend) return;
+      playService.desktopLyricService.sendLyricLineMessage(
+        transitionLine,
+        nextLine: nextLine,
+        isWordByWord: lyric.isWordByWord,
+        syntheticLineId: playService.desktopLyricService
+            .syntheticLineIdForStart(transitionStart),
+      );
+    });
+  }
+
+  /// 第一行歌词开始前给桌面歌词发送完整前奏，保持中途启动时的进度一致。
+  void _sendDesktopPreludeIfNeeded(int posMs) {
+    final lyric = _currLyric;
+    if (lyric == null || lyric.lines.isEmpty) return;
+    final firstIndex = lyric.lines.indexWhere(_hasDesktopLyricContent);
+    if (firstIndex < 0) return;
+    final firstLine = lyric.lines[firstIndex];
+    final preludeLine = desktopLyricPreludeLineAt(lyric, posMs);
+    if (preludeLine == null) {
+      _desktopPreludeShown = false;
+      return;
+    }
+    if (_desktopPreludeShown) return;
+    _desktopPreludeShown = true;
+    playService.desktopLyricService.canSendMessage.then((canSend) {
+      if (!canSend) return;
+      playService.desktopLyricService.sendLyricLineMessage(
+        preludeLine,
+        nextLine: firstLine,
+        isWordByWord: lyric.isWordByWord,
+        syntheticLineId: playService.desktopLyricService
+            .syntheticLineIdForStart(preludeLine.start.inMilliseconds),
+      );
+    });
+  }
+
+  Audio? _getNowPlaying() => playService.playbackService.nowPlaying;
+
+  Future<void> writeCurrentLyricToTag({
+    LyricTagWordFormat? wordFormat,
+    String? expectedPath,
+  }) async {
+    final nowPlaying = _getNowPlaying();
+    if (nowPlaying == null) throw StateError('当前没有正在播放的歌曲');
+    final audioPath = nowPlaying.path;
+    if (expectedPath != null && expectedPath != audioPath) {
+      throw StateError('当前歌曲已切换');
+    }
+
+    final lyric = _currLyric ?? await currLyricFuture;
+    if (lyric == null) throw StateError('当前歌曲没有可写入的歌词');
+
+    final lrcText = serializeLyricToLrc(
+      lyric,
+      wordFormat: wordFormat ?? AppSettings.instance.lyricTagWordFormat,
+      includeTranslation: AppSettings.instance.lyricTagIncludeTranslation,
+      includeRomanization: AppSettings.instance.lyricTagIncludeRomanization,
+    );
+    if (lrcText.trim().isEmpty) {
+      throw StateError('当前歌词内容为空');
+    }
+    if (_getNowPlaying()?.path != audioPath) {
+      throw StateError('当前歌曲已切换');
+    }
+
+    await writeLyricToPath(path: audioPath, lyric: lrcText);
+  }
+
+  Future<String?> saveCurrentLyricAsLrc({
+    LyricTagWordFormat? wordFormat,
+  }) async {
+    final nowPlaying = _getNowPlaying();
+    if (nowPlaying == null) return null;
+
+    final lyric = _currLyric ?? await currLyricFuture;
+    if (lyric == null) return null;
+
+    final lrcText = serializeLyricToLrc(
+      lyric,
+      wordFormat: wordFormat ?? AppSettings.instance.lyricTagWordFormat,
+    );
+    if (lrcText.trim().isEmpty) return null;
+
+    final dir = p.dirname(nowPlaying.path);
+    final base = p.basenameWithoutExtension(nowPlaying.path);
+    final outPath = p.join(dir, '$base.lrc');
+    final outFile = File(outPath);
+
+    if (outFile.existsSync()) {
+      final bakPath = p.join(dir, '$base.lrc.bak');
+      try {
+        await outFile.copy(bakPath);
+      } catch (_) {}
+    }
+
+    await writeTextFileAtomically(outPath, lrcText);
+
+    return outPath;
+  }
+
+  /// 供 widget 使用
+  Future<Lyric?> currLyricFuture = Future.value(null);
+  LyricSourceType _activeLyricSourceType = LyricSourceType.local;
+
+  /// 当前歌词是否已加载
+  bool get hasLyric => _currLyric != null;
+
+  /// 下一行歌词
+  int _nextLyricLine = 0;
+  int _lastEmittedLineIndexForHint = -1;
+  List<int> _lastEmittedActiveIndices = const [];
+  List<int> _lastEmittedLayoutIndices = const [];
+
+  late final StreamController<LyricLineUpdate> _lyricLineStreamController =
+      StreamController.broadcast(
+        onListen: () {
+          forceEmitCurrentLine();
+        },
+      );
+
+  Stream<LyricLineUpdate> get lyricLineStream =>
+      _lyricLineStreamController.stream;
+
+  LyricLineUpdate? lineUpdateAt(double positionSeconds) {
+    final lyric = _currLyric;
+    if (lyric == null) return null;
+    return lineUpdateForLyric(
+      lyric,
+      positionSeconds,
+      hint: _lastEmittedLineIndexForHint,
+    );
+  }
+
+  LyricLineUpdate? lineUpdateForLyric(
+    Lyric lyric,
+    double positionSeconds, {
+    int hint = -1,
+  }) {
+    if (lyric.lines.isEmpty) return null;
+    final posMs = (positionSeconds * 1000).round();
+    final useCurrentTables = identical(lyric, _currLyric);
+    final renderStartMs = useCurrentTables
+        ? _lineRenderStartMs
+        : _buildLineStarts(lyric);
+    final lineEndMs = useCurrentTables ? _lineEndMs : _buildLineEnds(lyric);
+    final switchStartMs = useCurrentTables
+        ? _lineSwitchStartMs
+        : _buildLineSwitchStarts(lyric, renderStartMs, lineEndMs);
+    final hasOverlaps = useCurrentTables
+        ? _hasOverlappingActiveLines
+        : _detectOverlappingActiveLinesFor(renderStartMs, lineEndMs);
+    final next = _findLrcPosInTables(
+      time: posMs,
+      lines: lyric.lines,
+      lineRenderStartMs: switchStartMs,
+      lineEndMs: lineEndMs,
+      hint: hint,
+    );
+    final currLineIndex = (next == -1 ? lyric.lines.length : next) - 1;
+    var activeIndices = _computeActiveLinesFor(
+      lyric: lyric,
+      posMs: posMs,
+      lineRenderStartMs: renderStartMs,
+      lineEndMs: lineEndMs,
+      hasOverlaps: hasOverlaps,
+    );
+    var layoutIndices = _computeLayoutLinesFor(
+      lyric: lyric,
+      posMs: posMs,
+      lineRenderStartMs: renderStartMs,
+      lineEndMs: lineEndMs,
+      activeIndices: activeIndices,
+      preferredIndex: currLineIndex,
+    );
+    if (currLineIndex >= 0 &&
+        currLineIndex < renderStartMs.length &&
+        posMs < renderStartMs[currLineIndex]) {
+      activeIndices = const [];
+      layoutIndices = const [];
+    }
+
+    if (currLineIndex < 0) {
+      return LyricLineUpdate(
+        primaryIndex: 0,
+        activeIndices: activeIndices,
+        layoutIndices: layoutIndices,
+      );
+    }
+    if (currLineIndex >= lyric.lines.length) {
+      return LyricLineUpdate(
+        primaryIndex: lyric.lines.length - 1,
+        activeIndices: activeIndices,
+        layoutIndices: layoutIndices,
+      );
+    }
+
+    if (layoutIndices.isNotEmpty) {
+      final minActive = layoutIndices.first;
+      return LyricLineUpdate(
+        primaryIndex: minActive,
+        activeIndices: activeIndices,
+        layoutIndices: layoutIndices,
+      );
+    }
+
+    final primaryIndex = currLineIndex;
+    return LyricLineUpdate(
+      primaryIndex: primaryIndex,
+      activeIndices: activeIndices,
+      layoutIndices: layoutIndices,
+    );
+  }
+
+  LyricLineUpdate? currentLineUpdate() {
+    return lineUpdateAt(playService.playbackService.position);
+  }
+
+  List<int> switchStartMsForLyric(Lyric lyric) {
+    if (identical(lyric, _currLyric)) {
+      return List<int>.unmodifiable(_lineSwitchStartMs);
+    }
+    final renderStartMs = _buildLineStarts(lyric);
+    return List<int>.unmodifiable(
+      _buildLineSwitchStarts(lyric, renderStartMs, _buildLineEnds(lyric)),
+    );
+  }
+
+  /// 强制发射当前行（绕过 _lastEmittedLineIndex 检查），
+  /// 用于新创建的歌词 view 初始化时获取当前行
+  void forceEmitCurrentLine() {
+    final lyric = _currLyric;
+    if (lyric == null) {
+      final token = _lyricRequestToken;
+      final path = _activeLyricPath;
+      final future = currLyricFuture;
+      future.then((value) {
+        if (path == null || !_isCurrentLyricRequest(token, path, future)) {
+          return;
+        }
+        if (value == null) return;
+        _setCurrLyric(value);
+        forceEmitCurrentLine();
+      });
+      return;
+    }
+    final posMs = (playService.playbackService.position * 1000).round();
+    final next = _findLrcPos(
+      time: posMs,
+      lines: lyric.lines,
+      hint: _lastEmittedLineIndexForHint,
+    );
+    _nextLyricLine = next == -1 ? lyric.lines.length : next;
+    final currLineIndex = _nextLyricLine - 1;
+    final activity = _lineActivityForSwitchPosition(currLineIndex, posMs);
+    final activeIndices = activity.activeIndices;
+    final layoutIndices = activity.layoutIndices;
+
+    if (currLineIndex < 0) {
+      if (0 != _lastEmittedLineIndex ||
+          !listEquals(_lastEmittedActiveIndices, activeIndices) ||
+          !listEquals(_lastEmittedLayoutIndices, layoutIndices)) {
+        _lastEmittedLineIndex = 0;
+        _lastEmittedLineIndexForHint = 0;
+        _lastEmittedActiveIndices = activeIndices;
+        _lastEmittedLayoutIndices = layoutIndices;
+        _lyricLineStreamController.add(
+          LyricLineUpdate(
+            primaryIndex: 0,
+            activeIndices: activeIndices,
+            layoutIndices: layoutIndices,
+          ),
+        );
+      }
+      _sendDesktopPreludeIfNeeded(posMs);
+      _restartLineAdvanceTimer();
+      return;
+    }
+    if (currLineIndex >= lyric.lines.length) {
+      final p = lyric.lines.length - 1;
+      if (p != _lastEmittedLineIndex ||
+          !listEquals(_lastEmittedActiveIndices, activeIndices) ||
+          !listEquals(_lastEmittedLayoutIndices, layoutIndices)) {
+        _lastEmittedLineIndex = p;
+        _lastEmittedLineIndexForHint = p;
+        _lastEmittedActiveIndices = activeIndices;
+        _lastEmittedLayoutIndices = layoutIndices;
+        _lyricLineStreamController.add(
+          LyricLineUpdate(
+            primaryIndex: p,
+            activeIndices: activeIndices,
+            layoutIndices: layoutIndices,
+          ),
+        );
+      }
+      _restartLineAdvanceTimer();
+      return;
+    }
+    var primaryIndex = currLineIndex;
+    if (layoutIndices.isNotEmpty) {
+      final minActive = layoutIndices.first;
+      if (minActive != currLineIndex) {
+        primaryIndex = minActive;
+      }
+    }
+    _lastEmittedLineIndex = primaryIndex;
+    _lastEmittedLineIndexForHint = primaryIndex;
+    _lastEmittedActiveIndices = activeIndices;
+    _lastEmittedLayoutIndices = layoutIndices;
+    _lyricLineStreamController.add(
+      LyricLineUpdate(
+        primaryIndex: primaryIndex,
+        activeIndices: activeIndices,
+        layoutIndices: layoutIndices,
+      ),
+    );
+
+    if (primaryIndex != _lastDesktopLyricLineIndex) {
+      _lastDesktopLyricLineIndex = primaryIndex;
+      _desktopGapShown = false;
+      if (primaryIndex >= 0 &&
+          primaryIndex < lyric.lines.length &&
+          _hasDesktopLyricContent(lyric.lines[primaryIndex])) {
+        final nextLine = primaryIndex + 1 < lyric.lines.length
+            ? lyric.lines[primaryIndex + 1]
+            : null;
+        playService.desktopLyricService.canSendMessage.then((canSend) {
+          if (!canSend) return;
+          playService.desktopLyricService.sendLyricLineMessage(
+            lyric.lines[primaryIndex],
+            nextLine: nextLine,
+            isWordByWord: lyric.isWordByWord,
+            highlightDeadlineMs: lyricHighlightDeadlineMsForLine(
+              lyric,
+              primaryIndex,
+            ),
+            lineIndex: primaryIndex,
+          );
+        });
+      }
+    }
+    _sendDesktopGapIfNeeded(currLineIndex, posMs);
+  }
+
+  void findCurrLyricLineAt(double positionSeconds) {
+    final lyric = _currLyric;
+    if (lyric == null) {
+      final token = _lyricRequestToken;
+      final path = _activeLyricPath;
+      final future = currLyricFuture;
+      future.then((value) {
+        if (path == null || !_isCurrentLyricRequest(token, path, future)) {
+          return;
+        }
+        if (value == null) return;
+        _setCurrLyric(value);
+        findCurrLyricLineAt(positionSeconds);
+      });
+      return;
+    }
+
+    final posMs = (positionSeconds * 1000).round();
+    final hint = _lastEmittedLineIndexForHint;
+    final next = _findLrcPos(time: posMs, lines: lyric.lines, hint: hint);
+    _nextLyricLine = next == -1 ? lyric.lines.length : next;
+    final currLineIndex = _nextLyricLine - 1;
+    final activity = _lineActivityForSwitchPosition(currLineIndex, posMs);
+    final activeIndices = activity.activeIndices;
+    final layoutIndices = activity.layoutIndices;
+
+    if (currLineIndex < 0) {
+      if (0 != _lastEmittedLineIndex ||
+          !listEquals(_lastEmittedActiveIndices, activeIndices) ||
+          !listEquals(_lastEmittedLayoutIndices, layoutIndices)) {
+        _lastEmittedLineIndex = 0;
+        _lastEmittedLineIndexForHint = 0;
+        _lastEmittedActiveIndices = activeIndices;
+        _lastEmittedLayoutIndices = layoutIndices;
+        _lyricLineStreamController.add(
+          LyricLineUpdate(
+            primaryIndex: 0,
+            activeIndices: activeIndices,
+            layoutIndices: layoutIndices,
+          ),
+        );
+      }
+      _sendDesktopPreludeIfNeeded(posMs);
+      _restartLineAdvanceTimer();
+      return;
+    }
+    if (currLineIndex >= lyric.lines.length) {
+      final p = lyric.lines.length - 1;
+      if (p != _lastEmittedLineIndex ||
+          !listEquals(_lastEmittedActiveIndices, activeIndices) ||
+          !listEquals(_lastEmittedLayoutIndices, layoutIndices)) {
+        _lastEmittedLineIndex = p;
+        _lastEmittedLineIndexForHint = p;
+        _lastEmittedActiveIndices = activeIndices;
+        _lastEmittedLayoutIndices = layoutIndices;
+        _lyricLineStreamController.add(
+          LyricLineUpdate(
+            primaryIndex: p,
+            activeIndices: activeIndices,
+            layoutIndices: layoutIndices,
+          ),
+        );
+      }
+      _restartLineAdvanceTimer();
+      return;
+    }
+    var primaryIndex = currLineIndex;
+    if (layoutIndices.isNotEmpty) {
+      final minActive = layoutIndices.first;
+      if (minActive != currLineIndex) {
+        primaryIndex = minActive;
+      }
+    }
+    if (primaryIndex != _lastEmittedLineIndex ||
+        !listEquals(_lastEmittedActiveIndices, activeIndices) ||
+        !listEquals(_lastEmittedLayoutIndices, layoutIndices)) {
+      _lastEmittedLineIndex = primaryIndex;
+      _lastEmittedLineIndexForHint = primaryIndex;
+      _lastEmittedActiveIndices = activeIndices;
+      _lastEmittedLayoutIndices = layoutIndices;
+      _lyricLineStreamController.add(
+        LyricLineUpdate(
+          primaryIndex: primaryIndex,
+          activeIndices: activeIndices,
+          layoutIndices: layoutIndices,
+        ),
+      );
+    }
+
+    if (primaryIndex >= lyric.lines.length) {
+      _restartLineAdvanceTimer();
+      return;
+    }
+    if (primaryIndex != _lastDesktopLyricLineIndex) {
+      _lastDesktopLyricLineIndex = primaryIndex;
+      _desktopGapShown = false;
+      if (primaryIndex >= 0 &&
+          primaryIndex < lyric.lines.length &&
+          _hasDesktopLyricContent(lyric.lines[primaryIndex])) {
+        final nextLine = primaryIndex + 1 < lyric.lines.length
+            ? lyric.lines[primaryIndex + 1]
+            : null;
+        playService.desktopLyricService.canSendMessage.then((canSend) {
+          if (!canSend) return;
+          playService.desktopLyricService.sendLyricLineMessage(
+            lyric.lines[primaryIndex],
+            nextLine: nextLine,
+            isWordByWord: lyric.isWordByWord,
+            highlightDeadlineMs: lyricHighlightDeadlineMsForLine(
+              lyric,
+              primaryIndex,
+            ),
+            lineIndex: primaryIndex,
+          );
+        });
+      }
+    }
+    _sendDesktopGapIfNeeded(currLineIndex, posMs);
+    _restartLineAdvanceTimer();
+  }
+
+  /// hint 优先 + 二分搜索查找歌词位置
+  /// 正常播放时 hint 命中率 >95%，时间复杂度接近 O(1)
+  int _findLrcPos({
+    required int time,
+    required List<LyricLine> lines,
+    required int hint,
+  }) {
+    return _findLrcPosInTables(
+      time: time,
+      lines: lines,
+      lineRenderStartMs: _lineSwitchStartMs,
+      lineEndMs: _lineEndMs,
+      hint: hint,
+    );
+  }
+
+  int _findLrcPosInTables({
+    required int time,
+    required List<LyricLine> lines,
+    required List<int> lineRenderStartMs,
+    required List<int> lineEndMs,
+    required int hint,
+  }) {
+    final n = lines.length;
+    if (n == 0) return -1;
+
+    if (hint >= 0 &&
+        hint < n &&
+        hint < lineRenderStartMs.length &&
+        hint < lineEndMs.length) {
+      final nextIndex = hint + 1;
+      if (nextIndex < n &&
+          nextIndex < lineRenderStartMs.length &&
+          nextIndex < lineEndMs.length) {
+        final segNextStart = lineRenderStartMs[nextIndex];
+        final segNextEnd = lineEndMs[nextIndex];
+        if (time >= segNextStart && time < segNextEnd) {
+          return nextIndex + 1;
+        }
+      }
+      final segStartMs = lineRenderStartMs[hint];
+      final segEndMs = lineEndMs[hint];
+      if (time >= segStartMs && time < segEndMs) {
+        return hint + 1;
+      }
+    }
+
+    return _lowerBoundGreater(lineRenderStartMs, time);
+  }
+
+  List<int> _computeActiveLines(int posMs) {
+    final lyric = _currLyric;
+    if (lyric == null) return const [];
+    return _computeActiveLinesFor(
+      lyric: lyric,
+      posMs: posMs,
+      lineRenderStartMs: _lineRenderStartMs,
+      lineEndMs: _lineEndMs,
+      hasOverlaps: _hasOverlappingActiveLines,
+    );
+  }
+
+  List<int> _activeLinesForSwitchPosition(
+    List<int> activeIndices,
+    int lineIndex,
+    int posMs,
+  ) {
+    if (lineIndex >= 0 &&
+        lineIndex < _lineRenderStartMs.length &&
+        posMs < _lineRenderStartMs[lineIndex]) {
+      return const [];
+    }
+    return activeIndices;
+  }
+
+  ({List<int> activeIndices, List<int> layoutIndices})
+  _lineActivityForSwitchPosition(int lineIndex, int posMs) {
+    final lyric = _currLyric;
+    if (lyric == null) {
+      return (activeIndices: const [], layoutIndices: const []);
+    }
+    final activeIndices = _activeLinesForSwitchPosition(
+      _computeActiveLines(posMs),
+      lineIndex,
+      posMs,
+    );
+    final layoutIndices = _computeLayoutLinesFor(
+      lyric: lyric,
+      posMs: posMs,
+      lineRenderStartMs: _lineRenderStartMs,
+      lineEndMs: _lineEndMs,
+      activeIndices: activeIndices,
+      preferredIndex: lineIndex,
+    );
+    return (activeIndices: activeIndices, layoutIndices: layoutIndices);
+  }
+
+  List<int> _computeActiveLinesFor({
+    required Lyric lyric,
+    required int posMs,
+    required List<int> lineRenderStartMs,
+    required List<int> lineEndMs,
+    required bool hasOverlaps,
+  }) {
+    if (!hasOverlaps) return const [];
+    final active = <int>[];
+    // 只有 TTML 有时间重叠行，用全扫描即可（行数通常 < 200）
+    for (int i = 0; i < lyric.lines.length; i++) {
+      final line = lyric.lines[i];
+      final start = i < lineRenderStartMs.length
+          ? lineRenderStartMs[i]
+          : line.start.inMilliseconds;
+      final end = i < lineEndMs.length
+          ? lineEndMs[i]
+          : line.start.inMilliseconds + line.length.inMilliseconds;
+      if (posMs >= start && posMs < end) {
+        active.add(i);
+      }
+    }
+    return active;
+  }
+
+  List<int> _computeLayoutLinesFor({
+    required Lyric lyric,
+    required int posMs,
+    required List<int> lineRenderStartMs,
+    required List<int> lineEndMs,
+    required List<int> activeIndices,
+    required int preferredIndex,
+  }) {
+    if (lyric is! Ttml || activeIndices.isEmpty) return activeIndices;
+    final anchor = activeIndices.contains(preferredIndex)
+        ? preferredIndex
+        : activeIndices.last;
+    final layout = activeIndices.toSet();
+    for (final group in _buildParallelLyricGroups(
+      lyric: lyric,
+      lineStartMs: lineRenderStartMs,
+      lineEndMs: lineEndMs,
+    )) {
+      if (!group.members.contains(anchor) || posMs >= group.endMs) continue;
+      final startedMembers = group.members.where(
+        (index) =>
+            lineRenderStartMs[index] - posMs <= lyricWordPreSwitchMs &&
+            posMs < lineEndMs[index],
+      );
+      layout.addAll(startedMembers);
+      break;
+    }
+    return layout.toList()..sort();
+  }
+
+  int _lowerBoundGreater(List<int> arr, int x) {
+    if (arr.isEmpty) return -1;
+    int lo = 0;
+    int hi = arr.length;
+    while (lo < hi) {
+      final mid = (lo + hi) >> 1;
+      if (arr[mid] > x) {
+        hi = mid;
+      } else {
+        lo = mid + 1;
+      }
+    }
+    return lo >= arr.length ? -1 : lo;
+  }
+
+  List<int> _buildLineStarts(Lyric lyric) {
+    return lyric.lines.map(_lyricLineRenderStartMs).toList();
+  }
+
+  List<int> _buildLineEnds(Lyric lyric) {
+    return lyric.lines
+        .map((line) => _lyricLineRenderEndMs(lyric, line))
+        .toList();
+  }
+
+  List<int> _buildLineSwitchStarts(
+    Lyric lyric,
+    List<int> renderStartMs,
+    List<int> lineEndMs,
+  ) {
+    final switchStarts = List<int>.of(renderStartMs);
+    final groupByLine = <int, _ParallelLyricGroup>{};
+    for (final group in _buildParallelLyricGroups(
+      lyric: lyric,
+      lineStartMs: renderStartMs,
+      lineEndMs: lineEndMs,
+    )) {
+      for (final member in group.members) {
+        groupByLine[member] = group;
+      }
+    }
+    for (int i = 1; i < lyric.lines.length; i++) {
+      final line = lyric.lines[i];
+      final start = renderStartMs[i];
+      final previousGroup = groupByLine[i - 1];
+      if (previousGroup != null && identical(previousGroup, groupByLine[i])) {
+        continue;
+      }
+      if (line is SyncLyricLine && line.words.isNotEmpty) {
+        final previousLine = lyric.lines[i - 1];
+        switchStarts[i] = lyricLineSwitchStartMs(
+          previousSwitchStartMs: previousGroup?.endMs ?? switchStarts[i - 1],
+          previousLineEndMs: lineEndMs[i - 1],
+          nextLineStartMs: start,
+          preserveSingleWordTiming:
+              lyric is! Ttml &&
+              previousLine is SyncLyricLine &&
+              previousLine.words.length == 1,
+        );
+      }
+    }
+    return switchStarts;
+  }
+
+  void _setCurrLyric(Lyric lyric) {
+    // 先还原歌词中被 * 屏蔽的脏话词，避免星号/连字符干扰元数据检测
+    applyProfanityUncensor(lyric);
+    if (lyric is Ttml && _activeLyricSourceType == LyricSourceType.amll) {
+      blankAmllTtmlCreatorLines(lyric.lines);
+    } else if (!AppSettings.instance.keepLyricMetadata) {
+      final nowPlaying = _getNowPlaying();
+      final artists = nowPlaying == null
+          ? const <String>[]
+          : <String>{...nowPlaying.splitedArtists, nowPlaying.artist}
+                .where((artist) => artist.trim().isNotEmpty)
+                .toList(growable: false);
+      blankMetadataLines(
+        lyric.lines,
+        StripOptions(matchTitle: nowPlaying?.title, matchArtists: artists),
+      );
+    }
+
+    _currLyric = lyric;
+    _lineRenderStartMs = _buildLineStarts(lyric);
+    _lineEndMs = _buildLineEnds(lyric);
+    _lineSwitchStartMs = _buildLineSwitchStarts(
+      lyric,
+      _lineRenderStartMs,
+      _lineEndMs,
+    );
+    _hasOverlappingActiveLines =
+        lyric is Ttml &&
+        _detectOverlappingActiveLinesFor(_lineRenderStartMs, _lineEndMs);
+    playService.desktopLyricService.sendFullLyricMessage(lyric);
+    _lastEmittedLineIndexForHint = -1;
+    _syncLineAdvanceTimer();
+  }
+
+  bool _detectOverlappingActiveLinesFor(
+    List<int> lineRenderStartMs,
+    List<int> lineEndMs,
+  ) {
+    if (lineRenderStartMs.length < 2 || lineEndMs.length < 2) return false;
+    final intervals = <({int start, int end})>[];
+    for (int i = 0; i < lineRenderStartMs.length; i++) {
+      final start = lineRenderStartMs[i];
+      final end = i < lineEndMs.length ? lineEndMs[i] : start;
+      if (end > start) intervals.add((start: start, end: end));
+    }
+    if (intervals.length < 2) return false;
+    intervals.sort((a, b) => a.start.compareTo(b.start));
+    var previousEnd = intervals.first.end;
+    for (int i = 1; i < intervals.length; i++) {
+      final interval = intervals[i];
+      if (interval.start < previousEnd) return true;
+      if (interval.end > previousEnd) previousEnd = interval.end;
+    }
+    return false;
+  }
+
+  int _beginLyricRequest(String path) {
+    currLyricFuture.ignore();
+    _activeLyricPath = path;
+    _lyricRequestToken += 1;
+    _currLyric = null;
+    playService.desktopLyricService.sendFullLyricMessage(Lyric.empty);
+    _syncLineAdvanceTimer();
+    _lineRenderStartMs = const [];
+    _lineSwitchStartMs = const [];
+    _lineEndMs = const [];
+    _hasOverlappingActiveLines = false;
+    _lastEmittedLineIndex = -1;
+    _lastDesktopLyricLineIndex = -1;
+    _desktopGapShown = false;
+    _desktopPreludeShown = false;
+    _nextLyricLine = 0;
+    _lastEmittedActiveIndices = const [];
+    _lastEmittedLayoutIndices = const [];
+    return _lyricRequestToken;
+  }
+
+  bool _isCurrentLyricRequest(int token, String path, Future<Lyric?> future) {
+    return token == _lyricRequestToken &&
+        identical(currLyricFuture, future) &&
+        _activeLyricPath == path &&
+        playService.playbackService.nowPlaying?.path == path;
+  }
+
+  String _localLyricCacheKey(String audioPath) {
+    final selectedPath = lyricSources[audioPath]?.localLyricPath;
+    return selectedPath == null ? audioPath : '$audioPath\n$selectedPath';
+  }
+
+  Future<Lyric?> _loadLocalLyric(
+    String audioPath, {
+    bool notifyFailure = false,
+  }) async {
+    final cacheKey = _localLyricCacheKey(audioPath);
+    final selectedPath = lyricSources[audioPath]?.localLyricPath;
+    if (selectedPath != null && !await File(selectedPath).exists()) {
+      _lyricCache.remove(cacheKey);
+      _lyricPrefetches.remove(cacheKey);
+      if (notifyFailure) {
+        showTextOnSnackBar('指定的歌词文件不存在', variant: ToastVariant.error);
+      }
+      return null;
+    }
+    final cached = _lyricCache.get(cacheKey);
+    if (cached != null) return cached;
+    return _lyricPrefetches[cacheKey] ??
+        _readLocalLyric(audioPath, notifyFailure: notifyFailure);
+  }
+
+  Future<Lyric?> _readLocalLyric(
+    String audioPath, {
+    required bool notifyFailure,
+  }) async {
+    final selectedPath = lyricSources[audioPath]?.localLyricPath;
+    if (selectedPath == null) return loadLyricFromAudio(audioPath);
+    if (!await File(selectedPath).exists()) {
+      if (notifyFailure) {
+        showTextOnSnackBar('指定的歌词文件不存在', variant: ToastVariant.error);
+      }
+      return null;
+    }
+
+    final lyric = await loadLyricFromFile(selectedPath);
+    if (lyric == null && notifyFailure) {
+      showTextOnSnackBar('指定的歌词文件读取或解析失败', variant: ToastVariant.error);
+    }
+    return lyric;
+  }
+
+  static LyricSourceType _lyricSourceTypeFromResultSource(ResultSource source) {
+    return switch (source) {
+      ResultSource.qq => LyricSourceType.qq,
+      ResultSource.kugou => LyricSourceType.kugou,
+      ResultSource.ne => LyricSourceType.ne,
+      ResultSource.amll => LyricSourceType.amll,
+    };
+  }
+
+  Future<({Lyric lyric, ResultSource source, SongSearchResult? result})?>
+  _loadOnlineLyricWithFallback(Audio audio, ResultSource preferredSource) =>
+      getLyricWithSourceFallback(audio, preferredSource);
+
+  /// 启动带源切换的在线搜索：命中非首选源时固化该单曲来源，
+  /// 避免下次播放重复等待首选源超时。返回歌词加载 future。
+  Future<Lyric?> _startOnlineLyricWithFallback({
+    required Audio audio,
+    required ResultSource preferredSource,
+    required int requestToken,
+    required String audioPath,
+  }) {
+    final fallbackFuture = _loadOnlineLyricWithFallback(audio, preferredSource);
+    final lyricFuture = fallbackFuture.then((result) => result?.lyric);
+    final future = lyricFuture;
+    fallbackFuture.then((result) {
+      if (result == null ||
+          !_isCurrentLyricRequest(requestToken, audioPath, future)) {
+        return;
+      }
+      _activeLyricSourceType = _lyricSourceTypeFromResultSource(result.source);
+      final hitResult = result.result;
+      if (hitResult == null || result.source == preferredSource) return;
+      persistLyricSource(audioPath, hitResult.toLyricSource()).catchError((
+        error,
+        trace,
+      ) {
+        logger.w(
+          '[lyric] persist fallback source failed: $error',
+          stackTrace: trace,
+        );
+      });
+    });
+    return lyricFuture;
+  }
+
+  /// 根据默认歌词来源获取歌词：
+  /// 1. 如果没有指定来源，按照现在的方式寻找歌词（本地优先或在线优先）
+  /// 2. 如果指定来源，按照指定的来源获取
+  void updateLyric() {
+    _cancelLyricWritePrompt();
+
+    final nowPlaying = _getNowPlaying();
+    if (nowPlaying == null) return;
+    final audioPath = nowPlaying.path;
+
+    final requestToken = _beginLyricRequest(audioPath);
+    _activeLyricSourceType = LyricSourceType.local;
+
+    final lyricSource = lyricSources[audioPath];
+    final isFromWeb =
+        lyricSource != null && lyricSource.source != LyricSourceType.local;
+    final usesLocalLyric =
+        lyricSource?.source == LyricSourceType.local ||
+        (lyricSource == null && AppSettings.instance.localLyricFirst);
+    final localCacheKey = usesLocalLyric
+        ? _localLyricCacheKey(audioPath)
+        : null;
+
+    if (lyricSource == null) {
+      // 未指定单曲来源 → 使用全局「首选歌词来源」设置
+      if (AppSettings.instance.localLyricFirst) {
+        // 本地模式：只看内嵌/外置，绝不搜索网络
+        logger.i('[updateLyric] local mode: loadLyricFromAudio only');
+        currLyricFuture = _loadLocalLyric(audioPath, notifyFailure: true);
+      } else {
+        // 在线模式：只看用户选的那个源，不看内嵌/外置
+        final preferredSource = AppSettings.instance.preferredOnlineSource;
+        final rs = switch (preferredSource) {
+          LyricSourceType.qq => ResultSource.qq,
+          LyricSourceType.kugou => ResultSource.kugou,
+          LyricSourceType.ne => ResultSource.ne,
+          LyricSourceType.amll => ResultSource.amll,
+          LyricSourceType.local =>
+            ResultSource.qq, // unreachable in online mode
+        };
+        _activeLyricSourceType = _lyricSourceTypeFromResultSource(rs);
+        logger.i('[updateLyric] online mode: preferred=$rs');
+        currLyricFuture = _startOnlineLyricWithFallback(
+          audio: nowPlaying,
+          preferredSource: rs,
+          requestToken: requestToken,
+          audioPath: audioPath,
+        );
+      }
+    } else {
+      _activeLyricSourceType = lyricSource.source;
+      if (lyricSource.source == LyricSourceType.local) {
+        logger.i('[updateLyric] source=local, using loadLyricFromAudio');
+        currLyricFuture = _loadLocalLyric(audioPath, notifyFailure: true);
+      } else {
+        logger.i(
+          '[updateLyric] source=${lyricSource.source.name}, using getOnlineLyric',
+        );
+        currLyricFuture = getOnlineLyric(
+          qqSongId: lyricSource.qqSongId,
+          kugouSongHash: lyricSource.kugouSongHash,
+          neSongId: lyricSource.neSongId,
+          amllTtmlFile: lyricSource.amllTtmlFile,
+          title: nowPlaying.title,
+          album: nowPlaying.album,
+          artist: nowPlaying.artist,
+          durationSec: nowPlaying.duration,
+        );
+      }
+    }
+
+    final future = currLyricFuture;
+    future.then((value) {
+      if (!_isCurrentLyricRequest(requestToken, audioPath, future)) return;
+      logger.d('[lyric_service] then: value=${value?.lines.length ?? "null"}');
+      if (value != null) {
+        _nextLyricLine = 0;
+        _setCurrLyric(value);
+        if (usesLocalLyric) {
+          _lyricCache.put(localCacheKey!, value);
+        }
+        // 网络歌词加载成功后，安排写入标签提示
+        if (isFromWeb || value.source == LyricFormat.web) {
+          _scheduleLyricWritePrompt(audioPath);
+          unawaited(_autoSaveExternalLyric(audioPath));
+        }
+      } else {
+        _currLyric = null;
+      }
+      findCurrLyricLineAt(playService.playbackService.position);
+      _notifyLyricChangeListeners();
+    });
+
+    notifyListeners();
+  }
+
+  /// 取消待处理的写入标签提示
+  void _cancelLyricWritePrompt() {
+    _promptGeneration += 1;
+    _promptTimer?.cancel();
+    _promptTimer = null;
+  }
+
+  /// 网络歌词加载成功后，延迟弹出写入标签提示或自动写入
+  void _scheduleLyricWritePrompt(String audioPath) {
+    _cancelLyricWritePrompt();
+    if (!enableOnlineLyricWriting) return;
+
+    // 已提示过/忽略过，不再提示
+    if (!_lyricWritePromptHistory.shouldPrompt(audioPath)) return;
+
+    final settings = AppSettings.instance;
+    final useAutoWrite = settings.autoWriteLyricToTag;
+    final delay = Duration(
+      seconds: useAutoWrite
+          ? settings.autoWriteLyricToTagDelay
+          : settings.promptWriteLyricToTagDelay,
+    );
+
+    final generation = _promptGeneration;
+    _promptTimer = Timer(delay, () {
+      if (generation != _promptGeneration) return;
+      // 倒计时结束时检查是否还是同一首歌
+      final nowPlaying = _getNowPlaying();
+      if (nowPlaying == null || nowPlaying.path != audioPath) return;
+
+      // 异步检查是否已有内嵌歌词
+      getLyricFromPath(path: audioPath).then((existing) {
+        if (generation != _promptGeneration ||
+            _getNowPlaying()?.path != audioPath) {
+          return;
+        }
+        if (existing != null && existing.trim().isNotEmpty) {
+          // 已有歌词，不再提示
+          _lyricWritePromptHistory.markEmbeddedLyricFound(audioPath);
+          return;
+        }
+
+        if (useAutoWrite) {
+          // 自动写入模式：直接写入，不弹窗
+          _handleAutoWrite(audioPath);
+        } else {
+          // 手动模式：弹窗询问
+          final shown = showLyricWritePrompt(
+            title: nowPlaying.title,
+            onWrite: () => _handlePromptWrite(audioPath),
+            onDismiss: () => _handlePromptDismiss(audioPath),
+          );
+          if (shown) {
+            _lyricWritePromptHistory.markPromptShown(audioPath);
+          }
+        }
+      });
+    });
+  }
+
+  /// 用户选择写入标签 → 立即写入当前歌曲标签
+  void _handlePromptWrite(String audioPath) {
+    _lyricWritePromptHistory.markPromptShown(audioPath);
+    writeCurrentLyricToTag(expectedPath: audioPath)
+        .then((_) {
+          showTextOnSnackBar('歌词已写入标签', variant: ToastVariant.success);
+        })
+        .catchError((e, trace) {
+          _lyricWritePromptHistory.markWriteFailed(audioPath);
+          logger.e('写入歌词标签失败', error: e, stackTrace: trace);
+          showTextOnSnackBar('写入标签失败，请查看日志', variant: ToastVariant.error);
+        });
+  }
+
+  /// 用户选择忽略 → 仅本次提示不再显示，不影响设置
+  void _handlePromptDismiss(String audioPath) {
+    _lyricWritePromptHistory.markPromptShown(audioPath);
+    _cancelLyricWritePrompt();
+    showTextOnSnackBar('本次提示已跳过');
+  }
+
+  /// 自动写入：静默写入，不弹窗
+  void _handleAutoWrite(String audioPath) {
+    _lyricWritePromptHistory.markPromptShown(audioPath);
+
+    writeCurrentLyricToTag(expectedPath: audioPath)
+        .then((_) {
+          // 静默成功，不打扰用户
+        })
+        .catchError((e) {
+          _lyricWritePromptHistory.markWriteFailed(audioPath);
+          logger.e('自动写入歌词标签失败: $e');
+        });
+  }
+
+  /// 网络歌词加载成功后，静默保存同名外置 .lrc 文件，已存在则先备份为 .bak
+  Future<void> _autoSaveExternalLyric(String audioPath) async {
+    if (!enableOnlineLyricWriting) return;
+    if (!AppSettings.instance.autoSaveExternalLyric) return;
+    final nowPlaying = _getNowPlaying();
+    if (nowPlaying == null || nowPlaying.path != audioPath) return;
+    try {
+      await saveCurrentLyricAsLrc();
+    } catch (e) {
+      logger.e('自动保存外置歌词失败: $e');
+    }
+  }
+
+  /// 重置写入标签提示状态（刷新已提示列表）
+  void resetLyricWritePrompts() {
+    _cancelLyricWritePrompt();
+    _lyricWritePromptHistory.clear();
+  }
+
+  /// 预加载歌词（不影响当前播放）
+  /// 下一首切换时直接使用缓存
+  void prefetchLyric(Audio audio) {
+    final path = audio.path;
+    final lyricSource = lyricSources[path];
+    final usesLocalLyric =
+        lyricSource?.source == LyricSourceType.local ||
+        (lyricSource == null && AppSettings.instance.localLyricFirst);
+    if (!usesLocalLyric) return;
+    final cacheKey = _localLyricCacheKey(path);
+    // 如果已缓存，跳过
+    if (_lyricCache.containsKey(cacheKey) ||
+        _lyricPrefetches.containsKey(cacheKey)) {
+      return;
+    }
+    final generation = _prefetchGeneration;
+
+    // 触发加载但不等待结果
+    late final Future<Lyric?> future;
+    future = (() async {
+      try {
+        final value = await _readLocalLyric(path, notifyFailure: false);
+        if (value != null && generation == _prefetchGeneration) {
+          _lyricCache.put(cacheKey, value);
+        }
+        return value;
+      } finally {
+        if (identical(_lyricPrefetches[cacheKey], future)) {
+          _lyricPrefetches.remove(cacheKey);
+        }
+      }
+    })();
+    _lyricPrefetches[cacheKey] = future;
+    future.ignore();
+  }
+
+  void useLocalLyric() {
+    _cancelLyricWritePrompt();
+
+    final nowPlaying = _getNowPlaying();
+    if (nowPlaying == null) return;
+    final audioPath = nowPlaying.path;
+    final requestToken = _beginLyricRequest(audioPath);
+    _activeLyricSourceType = LyricSourceType.local;
+
+    final cacheKey = _localLyricCacheKey(audioPath);
+    currLyricFuture = _loadLocalLyric(audioPath, notifyFailure: true);
+    final future = currLyricFuture;
+    future.then((value) {
+      if (!_isCurrentLyricRequest(requestToken, audioPath, future)) return;
+      if (value != null) {
+        _setCurrLyric(value);
+        _lyricCache.put(cacheKey, value);
+      } else {
+        _currLyric = null;
+      }
+      findCurrLyricLineAt(playService.playbackService.position);
+      _notifyLyricChangeListeners();
+    });
+
+    notifyListeners();
+  }
+
+  /// 写入标签后刷新当前歌词：清除本地缓存并重新从标签加载
+  void reloadLyricFromTag() {
+    final nowPlaying = _getNowPlaying();
+    if (nowPlaying == null) return;
+    final cacheKey = _localLyricCacheKey(nowPlaying.path);
+    _lyricCache.remove(cacheKey);
+    _lyricPrefetches.remove(cacheKey);
+    useLocalLyric();
+  }
+
+  void useOnlineLyric() {
+    _cancelLyricWritePrompt();
+
+    final nowPlaying = _getNowPlaying();
+    if (nowPlaying == null) return;
+    final audioPath = nowPlaying.path;
+    final requestToken = _beginLyricRequest(audioPath);
+
+    // 优先使用已保存的指定来源，避免重新搜索导致加载失败
+    final savedSource = lyricSources[audioPath];
+    if (savedSource != null && savedSource.source != LyricSourceType.local) {
+      _activeLyricSourceType = savedSource.source;
+      logger.i(
+        '[useOnlineLyric] using saved source: ${savedSource.source.name}',
+      );
+      currLyricFuture = getOnlineLyric(
+        qqSongId: savedSource.qqSongId,
+        kugouSongHash: savedSource.kugouSongHash,
+        neSongId: savedSource.neSongId,
+        amllTtmlFile: savedSource.amllTtmlFile,
+        title: nowPlaying.title,
+        album: nowPlaying.album,
+        artist: nowPlaying.artist,
+        durationSec: nowPlaying.duration,
+      );
+    } else {
+      // 无指定来源 → 使用首选在线源（单源搜索，不三源并行）
+      final rs = switch (AppSettings.instance.preferredOnlineSource) {
+        LyricSourceType.qq => ResultSource.qq,
+        LyricSourceType.kugou => ResultSource.kugou,
+        LyricSourceType.ne => ResultSource.ne,
+        LyricSourceType.amll => ResultSource.amll,
+        LyricSourceType.local => ResultSource.qq,
+      };
+      _activeLyricSourceType = _lyricSourceTypeFromResultSource(rs);
+      logger.i('[useOnlineLyric] no saved source, searching preferred: $rs');
+      currLyricFuture = _startOnlineLyricWithFallback(
+        audio: nowPlaying,
+        preferredSource: rs,
+        requestToken: requestToken,
+        audioPath: audioPath,
+      );
+    }
+
+    final future = currLyricFuture;
+    future.then((value) {
+      if (!_isCurrentLyricRequest(requestToken, audioPath, future)) return;
+      if (value != null) {
+        _setCurrLyric(value);
+        _scheduleLyricWritePrompt(audioPath);
+      } else {
+        _currLyric = null;
+      }
+      findCurrLyricLineAt(playService.playbackService.position);
+      _notifyLyricChangeListeners();
+    });
+
+    notifyListeners();
+  }
+
+  void useSpecificLyric(Lyric lyric) {
+    final nowPlaying = _getNowPlaying();
+    if (nowPlaying == null) return;
+    final audioPath = nowPlaying.path;
+    final requestToken = _beginLyricRequest(audioPath);
+    _activeLyricSourceType = LyricSourceType.local;
+
+    currLyricFuture = Future.value(lyric);
+    final future = currLyricFuture;
+    future.then((value) {
+      if (!_isCurrentLyricRequest(requestToken, audioPath, future)) return;
+      if (value != null) {
+        _setCurrLyric(value);
+      } else {
+        _currLyric = null;
+      }
+      findCurrLyricLineAt(playService.playbackService.position);
+      _notifyLyricChangeListeners();
+    });
+
+    notifyListeners();
+  }
+
+  void _notifyLyricChangeListeners() {
+    notifyListeners();
+  }
+
+  @override
+  void dispose() {
+    _cancelLyricWritePrompt();
+    _lyricLineStreamController.close();
+    playService.playbackService.playerStateNotifier.removeListener(
+      _syncLineAdvanceTimer,
+    );
+    _lineAdvanceTimer?.cancel();
+    _lyricPrefetches.clear();
+    _lyricCache.clear();
+    super.dispose();
+  }
+
+  void clearCache() {
+    _prefetchGeneration++;
+    _lyricPrefetches.clear();
+    _lyricCache.clear();
+  }
+
+  void reloadAfterMetadataSettingChange() {
+    clearCache();
+    clearOnlineLyricCache();
+    updateLyric();
+  }
+}

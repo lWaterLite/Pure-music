@@ -1,0 +1,105 @@
+[package]
+name = "rust_lib_pure_music"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+crate-type = ["cdylib", "staticlib"]
+
+[dependencies]
+flutter_rust_bridge = "=2.12.0"
+lofty = "0.22.4"
+dsf-meta = "0.2.7"
+id3 = "1.17.1"
+ndsd-read = "0.1.2"
+ratag = "0.1.1"
+midly = "0.5.3"
+serde_json = "1.0.117"
+phf = { version = "0.11", features = ["macros"] }
+windows-core = "0.57.0"
+rusqlite = { version = "0.31.0", features = ["bundled"] }
+windows = { version = "0.57.0", features = [
+    "implement",
+    "Media_Core",
+    "Media_Playback",
+    "Storage",
+    "Storage_Streams",
+    "Storage_FileProperties",
+    "Storage_Pickers",
+    "Foundation",
+    "Foundation_Collections",
+    "System",
+    "Win32_UI_Shell",
+    "Win32_UI_Shell_PropertiesSystem",
+    "Win32_UI_WindowsAndMessaging",
+    "Win32_Media_Audio",
+    "Win32_Media_Audio_Endpoints",
+"Win32_Foundation",
+    "Win32_Graphics_Gdi",
+    "Win32_Storage_FileSystem",
+    "Win32_System_Com",
+    "Win32_System_LibraryLoader",
+    "Win32_System_WinRT",
+    "Win32_System_Com_StructuredStorage",
+    "Win32_System_Variant",
+    "Win32_System_Ole",
+    "UI_ViewManagement",
+] }
+anyhow = "1.0.86"
+ttf-parser = "0.24.1"
+image = { version = "0.25.5", default-features = false, features = ["png", "jpeg", "webp"] }
+aes = "0.8.3"
+md-5 = "0.10.6"
+rand = "0.8.5"
+base64 = "0.22.1"
+hex = "0.4.3"
+reqwest = { version = "0.12.0", default-features = false, features = ["json", "blocking", "rustls-tls"] }
+serde = { version = "1.0", features = ["derive"] }
+unicode-normalization = "0.1.24"
+kmeans_colors = "0.7"
+palette = "0.7"
+symphonia = { version = "0.6.0", default-features = false, features = [
+    "ape",
+    "caf",
+    "flac",
+    "id3v1",
+    "id3v2",
+    "isomp4",
+    "mkv",
+    "mp1",
+    "mp2",
+    "mp3",
+    "ogg",
+    "pcm",
+    "aiff",
+    "wav",
+] }
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(frb_expand)'] }
+
+# ========================================
+# 🚀 编译加速配置
+# ========================================
+
+[profile.dev]
+# 开发模式：最快编译速度
+opt-level = 0          # 不优化，编译最快
+debug = 1              # 减少调试信息（0=无，1=行号，2=完整）
+incremental = true     # 增量编译
+split-debuginfo = "unpacked"  # Windows 加速调试信息生成
+
+# 依赖库优化（编译一次后缓存，显著提升后续编译速度）
+[profile.dev.package."*"]
+opt-level = 2          # 依赖库使用中等优化
+debug = false          # 依赖库不生成调试信息
+
+[profile.release]
+# Release 模式保持高质量
+opt-level = 3          # 最高优化
+lto = "thin"           # 链接时优化
+codegen-units = 1      # 单个编译单元，生成最优代码
+strip = true           # 移除调试符号
+panic = "unwind"       # FFI 捕获 panic 并返回 Dart，避免整个进程直接退出
+
+

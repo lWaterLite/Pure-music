@@ -1,0 +1,61 @@
+// ignore_for_file: constant_identifier_names, non_constant_identifier_names
+
+import 'dart:ffi' as ffi;
+import 'bass.dart';
+
+// BASS_FX constants
+const int BASS_FX_FREESOURCE = 0x10000;
+
+// Attributes
+const int BASS_ATTRIB_TEMPO = 0x10000;
+const int BASS_ATTRIB_TEMPO_PITCH = 0x10001;
+const int BASS_ATTRIB_TEMPO_FREQ = 0x10002;
+
+class BassFx {
+  final ffi.DynamicLibrary _lib;
+  BassFx(ffi.DynamicLibrary dynamicLibrary) : _lib = dynamicLibrary;
+
+  void close() {
+    _lib.close();
+  }
+
+  /// HSTREAM BASS_FX_TempoCreate(DWORD chan, DWORD flags);
+  late final _BASS_FX_TempoCreatePtr = () {
+    try {
+      return _lib.lookup<ffi.NativeFunction<HSTREAM Function(DWORD, DWORD)>>(
+        'BASS_FX_TempoCreate',
+      );
+    } catch (e) {
+      throw Exception('Failed to lookup BASS_FX_TempoCreate: $e');
+    }
+  }();
+
+  late final BASS_FX_TempoCreate = () {
+    try {
+      return _BASS_FX_TempoCreatePtr.asFunction<int Function(int, int)>();
+    } catch (e) {
+      throw Exception(
+          'Failed to create BASS_FX_TempoCreate function binding: $e');
+    }
+  }();
+
+  /// DWORD BASS_FX_GetVersion(void);
+  late final _BASS_FX_GetVersionPtr = () {
+    try {
+      return _lib.lookup<ffi.NativeFunction<ffi.Uint32 Function()>>(
+        'BASS_FX_GetVersion',
+      );
+    } catch (e) {
+      throw Exception('Failed to lookup BASS_FX_GetVersion: $e');
+    }
+  }();
+
+  late final BASS_FX_GetVersion = () {
+    try {
+      return _BASS_FX_GetVersionPtr.asFunction<int Function()>();
+    } catch (e) {
+      throw Exception(
+          'Failed to create BASS_FX_GetVersion function binding: $e');
+    }
+  }();
+}

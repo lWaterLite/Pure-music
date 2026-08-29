@@ -1,0 +1,63 @@
+name: pure_music
+description: Material You 风格的本地音乐播放器
+publish_to: none
+version: 2.2.3
+
+environment:
+  sdk: ">=3.10.3 <4.0.0"
+  flutter: ">=3.38.4"
+
+dependencies:
+  flutter:
+    sdk: flutter
+  flutter_localizations:
+    sdk: flutter
+
+  convert: ^3.1.2
+  crypto: ^3.0.7
+  desktop_lyric:
+    path: packages/desktop_lyric
+  dio: ^5.8.0+1
+  ffi: ^2.1.3
+  file_picker: ^8.1.2
+  win32: ^5.15.0
+  fl_charset: ^1.0.2
+  flutter_markdown_plus: ^1.0.7
+  flutter_rust_bridge: 2.12.0
+  flutter_shaders: ^0.1.3
+  flutter_single_instance: ^1.5.1
+  flutter_volume_controller: ^1.3.3
+  github: ^9.25.1
+  go_router: ^17.3.0
+  hotkey_manager: ^0.2.3
+  logger: ^2.7.0
+  material_symbols_icons: ^4.2815.1
+  path: ^1.9.0
+  pinyin: ^3.3.0
+  provider: ^6.1.2
+  rust_lib_pure_music:
+    path: rust_builder
+  sqlite3: ^2.1.0
+  tray_manager: ^0.5.3
+  window_manager: ^0.5.1
+  xml: ^6.5.0
+
+dev_dependencies:
+  flutter_lints: ^6.0.0
+  flutter_test:
+    sdk: flutter
+  integration_test:
+    sdk: flutter
+
+flutter:
+  uses-material-design: true
+  assets:
+    - assets/fonts/MiSans/MiSansVF.ttf
+    - app_icon.ico
+  shaders:
+    - assets/shaders/mesh_gradient_runtime.frag
+    - assets/shaders/soft_mesh_gradient.frag
+  fonts:
+    - family: MiSans
+      fonts:
+        - asset: assets/fonts/MiSans/MiSansVF.ttf
