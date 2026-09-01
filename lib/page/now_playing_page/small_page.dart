@@ -233,7 +233,7 @@ class _NowPlayingSmallMainControls extends StatelessWidget {
         return Row(
           mainAxisAlignment: MainAxisAlignment.center,
           children: [
-            const _NowPlayingPlaybackModeSwitch(),
+            const NowPlayingPlaybackModeSwitch(),
             const SizedBox(width: 16),
             IconButton(
               tooltip: hasNowPlaying ? '上一曲' : '暂无正在播放',

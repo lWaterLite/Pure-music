@@ -9,6 +9,7 @@ import 'package:pure_music/core/design_tokens.dart';
 import 'package:pure_music/core/preference.dart';
 import 'package:pure_music/component/hotkey_ui_feedback.dart';
 import 'package:pure_music/component/motion.dart';
+import 'package:pure_music/component/now_playing_playback_mode_switch.dart';
 import 'package:pure_music/component/side_nav.dart';
 import 'package:pure_music/component/title_bar.dart';
 import 'package:pure_music/core/menu_styles.dart';
@@ -773,101 +774,6 @@ class _NowPlayingMoreActionState extends State<_NowPlayingMoreAction> {
           color: useMonet ? scheme.primary : scheme.onSurface,
         ),
       ),
-    );
-  }
-}
-
-class _NowPlayingPlaybackModeSwitch extends StatefulWidget {
-  const _NowPlayingPlaybackModeSwitch();
-
-  @override
-  State<_NowPlayingPlaybackModeSwitch> createState() =>
-      _NowPlayingPlaybackModeSwitchState();
-}
-
-class _NowPlayingPlaybackModeSwitchState
-    extends State<_NowPlayingPlaybackModeSwitch> {
-  bool _isSaving = false;
-
-  Future<void> _changeMode({
-    required bool shuffle,
-    required PlayMode playMode,
-  }) async {
-    if (_isSaving) return;
-
-    setState(() => _isSaving = true);
-    try {
-      final playbackService = PlayService.instance.playbackService;
-      if (shuffle) {
-        playbackService.useShuffle(false);
-        playbackService.setPlayMode(PlayMode.forward);
-      } else {
-        switch (playMode) {
-          case PlayMode.forward:
-          case PlayMode.loop:
-            playbackService.setPlayMode(PlayMode.singleLoop);
-            break;
-          case PlayMode.singleLoop:
-            playbackService.useShuffle(true);
-            break;
-        }
-      }
-      await AppPreference.instance.savePlaybackOnly();
-    } finally {
-      if (mounted) {
-        setState(() => _isSaving = false);
-      }
-    }
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    final useMonet = AppSettings.instance.useMaterialYouForControls;
-    final scheme = Theme.of(context).colorScheme;
-    final color = useMonet ? scheme.primary : scheme.onSurface;
-    final disabledColor = color.withValues(alpha: 0.38);
-    final playbackService = PlayService.instance.playbackService;
-
-    return ListenableBuilder(
-      listenable: Listenable.merge([
-        playbackService.shuffle,
-        playbackService.playMode,
-      ]),
-      builder: (context, _) {
-        final shuffle = playbackService.shuffle.value;
-        final playMode = playbackService.playMode.value;
-
-        final modeText = switch (true) {
-          _ when shuffle => '随机播放',
-          _ when playMode == PlayMode.singleLoop => '单曲循环',
-          _ => '顺序播放',
-        };
-
-        final icon = switch (true) {
-          _ when shuffle => Symbols.shuffle,
-          _ when playMode == PlayMode.singleLoop => Symbols.repeat_one,
-          _ => Symbols.repeat,
-        };
-
-        return IconButton(
-          tooltip: _isSaving ? '保存中' : modeText,
-          onPressed: _isSaving
-              ? null
-              : () => _changeMode(shuffle: shuffle, playMode: playMode),
-          icon: _isSaving
-              ? SizedBox(
-                  width: 22,
-                  height: 22,
-                  child: CircularProgressIndicator(
-                    strokeWidth: 2,
-                    color: color,
-                  ),
-                )
-              : Icon(icon, fill: 0.0, weight: 400.0),
-          color: color,
-          disabledColor: disabledColor,
-        );
-      },
     );
   }
 }
