@@ -314,7 +314,7 @@ class AppSettings {
   bool enableInteractiveSurfaceMotion = true;
   bool enableDetailHeaderCollapseMotion = true;
   bool enableDataTransitionMotion = true;
-  bool alwaysShowNowPlayingControls = false;
+  bool alwaysShowNowPlayingControls = true;
   int? customCoverColor;
   String? appBackgroundImagePath;
   double appBackgroundImageOpacity = 0.22;
@@ -391,7 +391,7 @@ class AppSettings {
     );
     _instance.alwaysShowNowPlayingControls = normalizedBoolSetting(
       settingsMap['AlwaysShowNowPlayingControls'],
-      defaultValue: false,
+      defaultValue: true,
     );
     _instance.appBackgroundImagePath = normalizedPathSetting(
       settingsMap['AppBackgroundImagePath'],
@@ -498,7 +498,7 @@ class AppSettings {
     );
     _instance.alwaysShowNowPlayingControls = normalizedBoolSetting(
       settingsMap['AlwaysShowNowPlayingControls'],
-      defaultValue: false,
+      defaultValue: true,
     );
 
     final sep = settingsMap['ArtistSeparator'];
