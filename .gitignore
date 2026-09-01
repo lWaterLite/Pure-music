@@ -107,3 +107,5 @@ skills-lock.json
 
 # Reasonix task traces
 .reasonix/
+# Widget Preview related
+.widget_preview/
