@@ -29,6 +29,7 @@ import 'package:pure_music/page/page_scaffold.dart';
 import 'package:pure_music/page/settings_page/check_update.dart';
 import 'package:pure_music/page/settings_page/create_issue.dart';
 import 'package:pure_music/page/settings_page/artist_separator_editor.dart';
+import 'package:pure_music/page/settings_page/global_hotkeys.dart';
 import 'package:pure_music/page/settings_page/settings_group_entry.dart';
 import 'package:pure_music/page/settings_page/other_settings.dart'
     show AudioEchoLogRecordControl, ReplayGainControl, TransitionControl;
@@ -1549,6 +1550,13 @@ class _PlaybackTabContent extends StatelessWidget {
           title: '播放控制',
           subtitle: '任务栏播放控制',
           groupId: 'playback-control',
+        ),
+        SizedBox(height: 8.0),
+        _GroupEntry(
+          icon: Symbols.keyboard,
+          title: '快捷键',
+          subtitle: '配置全局播放与桌面歌词快捷键',
+          groupId: 'playback-hotkeys',
         ),
       ],
     );
@@ -3297,6 +3305,11 @@ const _settingsGroups = <String, _SettingsGroupDesc>{
     '播放控制',
     '任务栏播放控制',
     _PlaybackControlGroup(),
+  ),
+  'playback-hotkeys': _SettingsGroupDesc(
+    '快捷键',
+    '全局播放与桌面歌词快捷键',
+    GlobalHotkeysSettingsGroup(),
   ),
   'desktop-basic': _SettingsGroupDesc(
     '歌词内容',

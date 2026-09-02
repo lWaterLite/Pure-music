@@ -156,7 +156,6 @@ Future<void> _runApplication() async {
 
   // For hot reload, `unregisterAll()` needs to be called.
   await HotkeysHelper.unregisterAll();
-  HotkeysHelper.registerHotKeys();
 
   final supportPath = (await getAppDataDir()).path;
   CoverImageCache.instance.configure(indexPath: supportPath);
@@ -168,6 +167,8 @@ Future<void> _runApplication() async {
   if (File(path.join(settingsDir.path, 'app_preference.json')).existsSync()) {
     await AppPreference.read();
   }
+  await HotkeysHelper.registerHotKeys();
+  await HotkeysHelper.registerGlobalHotkeys();
   await AlbumColorCache.instance.init();
 
   final welcome = !File(path.join(supportPath, 'index.json')).existsSync();
