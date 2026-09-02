@@ -101,6 +101,10 @@ class _NowPlayingPitchPanelState extends State<NowPlayingPitchPanel> {
     final playbackService = PlayService.instance.playbackService;
     final useMonet = AppSettings.instance.useMaterialYouForControls;
     final keepPitch = AppSettings.instance.keepPitch;
+    const adjustButtonExtent = 24.0;
+    const sliderPadding = 24.0;
+    final sliderWidth = widget.width - (adjustButtonExtent * 2);
+    final sliderTrackWidth = sliderWidth - (sliderPadding * 2);
 
     return SizedBox(
       width: widget.width,
@@ -188,35 +192,36 @@ class _NowPlayingPitchPanelState extends State<NowPlayingPitchPanel> {
             ),
             child: ValueListenableBuilder(
               valueListenable: playbackService.pitch,
-              builder: (context, pitchValue, _) => Row(
-                children: [
-                  IconButton(
-                    onPressed:
-                        playbackService.isBassFxLoaded && pitchValue > -12.0 && !keepPitch
-                            ? () {
-                                final newValue =
-                                    (pitchValue - 1.0).clamp(-12.0, 12.0);
-                                playbackService.setPitch(newValue);
-                                _triggerPitchIndicator();
-                              }
-                            : null,
-                    icon: const Icon(Symbols.remove),
-                    color: useMonet ? scheme.primary : scheme.onSurface,
-                    padding: EdgeInsets.zero,
-                    constraints: const BoxConstraints(),
-                  ),
-                  Expanded(
-                    child: LayoutBuilder(builder: (context, constraints) {
-                      const double padding = 24.0;
-                      final double trackWidth =
-                          constraints.maxWidth - (padding * 2);
-                      const double min = -12.0;
-                      const double max = 12.0;
-                      final double percent = (pitchValue - min) / (max - min);
-                      final double leftOffset =
-                          padding + (trackWidth * percent);
+              builder: (context, pitchValue, _) {
+                const min = -12.0;
+                const max = 12.0;
+                final percent = (pitchValue - min) / (max - min);
 
-                      return MouseRegion(
+                return Row(
+                  children: [
+                    IconButton(
+                      onPressed:
+                          playbackService.isBassFxLoaded &&
+                              pitchValue > -12.0 &&
+                              !keepPitch
+                          ? () {
+                              final newValue = (pitchValue - 1.0).clamp(
+                                -12.0,
+                                12.0,
+                              );
+                              playbackService.setPitch(newValue);
+                              _triggerPitchIndicator();
+                            }
+                          : null,
+                      icon: const Icon(Symbols.remove),
+                      color: useMonet ? scheme.primary : scheme.onSurface,
+                      padding: EdgeInsets.zero,
+                      constraints: const BoxConstraints(),
+                    ),
+                    SizedBox(
+                      width: sliderWidth,
+                      height: 40.0,
+                      child: MouseRegion(
                         onEnter: (_) => setState(() => _isPitchHovering = true),
                         onExit: (_) => setState(() => _isPitchHovering = false),
                         child: Stack(
@@ -228,7 +233,8 @@ class _NowPlayingPitchPanelState extends State<NowPlayingPitchPanel> {
                               max: max,
                               divisions: 24,
                               value: pitchValue,
-                              onChanged: playbackService.isBassFxLoaded && !keepPitch
+                              onChanged:
+                                  playbackService.isBassFxLoaded && !keepPitch
                                   ? (value) {
                                       playbackService.setPitch(value);
                                     }
@@ -236,7 +242,7 @@ class _NowPlayingPitchPanelState extends State<NowPlayingPitchPanel> {
                             ),
                             if (_showPitchIndicator || _isPitchHovering)
                               Positioned(
-                                left: leftOffset - 24.0,
+                                left: sliderTrackWidth * percent,
                                 top: -40,
                                 child: IgnorePointer(
                                   child: _CustomValueIndicator(
@@ -248,26 +254,30 @@ class _NowPlayingPitchPanelState extends State<NowPlayingPitchPanel> {
                               ),
                           ],
                         ),
-                      );
-                    }),
-                  ),
-                  IconButton(
-                    onPressed:
-                        playbackService.isBassFxLoaded && pitchValue < 12.0 && !keepPitch
-                            ? () {
-                                final newValue =
-                                    (pitchValue + 1.0).clamp(-12.0, 12.0);
-                                playbackService.setPitch(newValue);
-                                _triggerPitchIndicator();
-                              }
-                            : null,
-                    icon: const Icon(Symbols.add),
-                    color: useMonet ? scheme.primary : scheme.onSurface,
-                    padding: EdgeInsets.zero,
-                    constraints: const BoxConstraints(),
-                  ),
-                ],
-              ),
+                      ),
+                    ),
+                    IconButton(
+                      onPressed:
+                          playbackService.isBassFxLoaded &&
+                              pitchValue < 12.0 &&
+                              !keepPitch
+                          ? () {
+                              final newValue = (pitchValue + 1.0).clamp(
+                                -12.0,
+                                12.0,
+                              );
+                              playbackService.setPitch(newValue);
+                              _triggerPitchIndicator();
+                            }
+                          : null,
+                      icon: const Icon(Symbols.add),
+                      color: useMonet ? scheme.primary : scheme.onSurface,
+                      padding: EdgeInsets.zero,
+                      constraints: const BoxConstraints(),
+                    ),
+                  ],
+                );
+              },
             ),
           ),
           const SizedBox(height: 12),
@@ -313,35 +323,34 @@ class _NowPlayingPitchPanelState extends State<NowPlayingPitchPanel> {
             ),
             child: ValueListenableBuilder(
               valueListenable: playbackService.rate,
-              builder: (context, rateValue, _) => Row(
-                children: [
-                  IconButton(
-                    onPressed:
-                        playbackService.isBassFxLoaded && rateValue > 0.5
-                            ? () {
-                                final newValue =
-                                    (rateValue - 0.1).clamp(0.5, 2.0);
-                                playbackService.setRate(newValue);
-                                _triggerRateIndicator();
-                              }
-                            : null,
-                    icon: const Icon(Symbols.remove),
-                    color: useMonet ? scheme.primary : scheme.onSurface,
-                    padding: EdgeInsets.zero,
-                    constraints: const BoxConstraints(),
-                  ),
-                  Expanded(
-                    child: LayoutBuilder(builder: (context, constraints) {
-                      const double padding = 24.0;
-                      final double trackWidth =
-                          constraints.maxWidth - (padding * 2);
-                      const double min = 0.5;
-                      const double max = 2.0;
-                      final double percent = (rateValue - min) / (max - min);
-                      final double leftOffset =
-                          padding + (trackWidth * percent);
+              builder: (context, rateValue, _) {
+                const min = 0.5;
+                const max = 2.0;
+                final percent = (rateValue - min) / (max - min);
 
-                      return MouseRegion(
+                return Row(
+                  children: [
+                    IconButton(
+                      onPressed:
+                          playbackService.isBassFxLoaded && rateValue > 0.5
+                          ? () {
+                              final newValue = (rateValue - 0.1).clamp(
+                                0.5,
+                                2.0,
+                              );
+                              playbackService.setRate(newValue);
+                              _triggerRateIndicator();
+                            }
+                          : null,
+                      icon: const Icon(Symbols.remove),
+                      color: useMonet ? scheme.primary : scheme.onSurface,
+                      padding: EdgeInsets.zero,
+                      constraints: const BoxConstraints(),
+                    ),
+                    SizedBox(
+                      width: sliderWidth,
+                      height: 40.0,
+                      child: MouseRegion(
                         onEnter: (_) => setState(() => _isRateHovering = true),
                         onExit: (_) => setState(() => _isRateHovering = false),
                         child: Stack(
@@ -361,7 +370,7 @@ class _NowPlayingPitchPanelState extends State<NowPlayingPitchPanel> {
                             ),
                             if (_showRateIndicator || _isRateHovering)
                               Positioned(
-                                left: leftOffset - 24.0,
+                                left: sliderTrackWidth * percent,
                                 top: -40,
                                 child: IgnorePointer(
                                   child: _CustomValueIndicator(
@@ -374,26 +383,28 @@ class _NowPlayingPitchPanelState extends State<NowPlayingPitchPanel> {
                               ),
                           ],
                         ),
-                      );
-                    }),
-                  ),
-                  IconButton(
-                    onPressed:
-                        playbackService.isBassFxLoaded && rateValue < 2.0
-                            ? () {
-                                final newValue =
-                                    (rateValue + 0.1).clamp(0.5, 2.0);
-                                playbackService.setRate(newValue);
-                                _triggerRateIndicator();
-                              }
-                            : null,
-                    icon: const Icon(Symbols.add),
-                    color: useMonet ? scheme.primary : scheme.onSurface,
-                    padding: EdgeInsets.zero,
-                    constraints: const BoxConstraints(),
-                  ),
-                ],
-              ),
+                      ),
+                    ),
+                    IconButton(
+                      onPressed:
+                          playbackService.isBassFxLoaded && rateValue < 2.0
+                          ? () {
+                              final newValue = (rateValue + 0.1).clamp(
+                                0.5,
+                                2.0,
+                              );
+                              playbackService.setRate(newValue);
+                              _triggerRateIndicator();
+                            }
+                          : null,
+                      icon: const Icon(Symbols.add),
+                      color: useMonet ? scheme.primary : scheme.onSurface,
+                      padding: EdgeInsets.zero,
+                      constraints: const BoxConstraints(),
+                    ),
+                  ],
+                );
+              },
             ),
           ),
         ],

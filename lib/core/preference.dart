@@ -850,7 +850,7 @@ class AppPreference {
         'folderAliases': folderAliases,
       });
 
-      final prefJson = json.encode(prefMap);
+      final prefJson = const JsonEncoder.withIndent('  ').convert(prefMap);
       await writeTextFileAtomically(appPreferencePath, prefJson);
       return true;
     } catch (err, trace) {
@@ -867,7 +867,9 @@ class AppPreference {
         'playback_pref.json',
       );
 
-      final prefJson = json.encode(playbackPref.toMap());
+      final prefJson = const JsonEncoder.withIndent(
+        '  ',
+      ).convert(playbackPref.toMap());
       await writeTextFileAtomically(playbackPrefPath, prefJson);
       return true;
     } catch (err, trace) {
