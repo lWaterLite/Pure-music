@@ -997,6 +997,8 @@ class _NowPlayingVolDspSliderState extends State<_NowPlayingVolDspSlider> {
     final menuWidth = (MediaQuery.sizeOf(context).width - 64.0)
         .clamp(180.0, 300.0)
         .toDouble();
+    const sliderPadding = 24.0;
+    final sliderTrackWidth = menuWidth - (sliderPadding * 2);
     //
 
     return MenuAnchor(
@@ -1052,71 +1054,65 @@ class _NowPlayingVolDspSliderState extends State<_NowPlayingVolDspSlider> {
                   child: ValueListenableBuilder(
                     valueListenable: dragSystemVol,
                     builder: (context, systemVolValue, _) {
-                      return LayoutBuilder(
-                        builder: (context, constraints) {
-                          const double padding = 24.0;
-                          final double trackWidth =
-                              constraints.maxWidth - (padding * 2);
-                          const double min = 0.0;
-                          const double max = 1.0;
-                          final double percent =
-                              (systemVolValue - min) / (max - min);
-                          final double leftOffset =
-                              padding + (trackWidth * percent);
+                      const min = 0.0;
+                      const max = 1.0;
+                      final percent = (systemVolValue - min) / (max - min);
 
-                          return MouseRegion(
-                            onEnter: (_) =>
-                                setState(() => _isSystemHovering = true),
-                            onExit: (_) =>
-                                setState(() => _isSystemHovering = false),
-                            child: Stack(
-                              clipBehavior: Clip.none,
-                              alignment: Alignment.centerLeft,
-                              children: [
-                                Slider(
-                                  thumbColor: scheme.secondary,
-                                  activeColor: scheme.secondary,
-                                  inactiveColor: scheme.outline,
-                                  min: min,
-                                  max: max,
-                                  value: systemVolValue,
-                                  onChangeStart: (value) {
-                                    isSystemDragging = true;
-                                    dragSystemVol.value = value;
-                                    systemVolumeService.set(value);
+                      return SizedBox(
+                        width: menuWidth,
+                        height: 40.0,
+                        child: MouseRegion(
+                          onEnter: (_) =>
+                              setState(() => _isSystemHovering = true),
+                          onExit: (_) =>
+                              setState(() => _isSystemHovering = false),
+                          child: Stack(
+                            clipBehavior: Clip.none,
+                            alignment: Alignment.centerLeft,
+                            children: [
+                              Slider(
+                                thumbColor: scheme.secondary,
+                                activeColor: scheme.secondary,
+                                inactiveColor: scheme.outline,
+                                min: min,
+                                max: max,
+                                value: systemVolValue,
+                                onChangeStart: (value) {
+                                  isSystemDragging = true;
+                                  dragSystemVol.value = value;
+                                  systemVolumeService.set(value);
+                                  _triggerSystemIndicator();
+                                },
+                                onChanged: (value) {
+                                  dragSystemVol.value = value;
+                                  systemVolumeService.set(value);
+                                  if (isSystemDragging) {
                                     _triggerSystemIndicator();
-                                  },
-                                  onChanged: (value) {
-                                    dragSystemVol.value = value;
-                                    systemVolumeService.set(value);
-                                    if (isSystemDragging) {
-                                      _triggerSystemIndicator();
-                                    }
-                                  },
-                                  onChangeEnd: (value) {
-                                    isSystemDragging = false;
-                                    dragSystemVol.value = value;
-                                    systemVolumeService.set(value);
-                                  },
-                                ),
-                                if (_showSystemCustomIndicator ||
-                                    _isSystemHovering)
-                                  Positioned(
-                                    left: leftOffset - 24.0,
-                                    top: -40,
-                                    child: IgnorePointer(
-                                      child: _CustomValueIndicator(
-                                        value: systemVolValue * 100,
-                                        suffix: '%',
-                                        color: scheme.secondary,
-                                        textColor: scheme.onSecondary,
-                                      ),
+                                  }
+                                },
+                                onChangeEnd: (value) {
+                                  isSystemDragging = false;
+                                  dragSystemVol.value = value;
+                                  systemVolumeService.set(value);
+                                },
+                              ),
+                              if (_showSystemCustomIndicator ||
+                                  _isSystemHovering)
+                                Positioned(
+                                  left: sliderTrackWidth * percent,
+                                  top: -40,
+                                  child: IgnorePointer(
+                                    child: _CustomValueIndicator(
+                                      value: systemVolValue * 100,
+                                      suffix: '%',
+                                      color: scheme.secondary,
+                                      textColor: scheme.onSecondary,
                                     ),
                                   ),
-                              ],
-                            ),
-                          );
-                        },
+                                ),
+                            ],
+                          ),
+                        ),
                       );
                     },
                   ),
@@ -1143,70 +1139,60 @@ class _NowPlayingVolDspSliderState extends State<_NowPlayingVolDspSlider> {
                       final currentValue = isDragging
                           ? dragVolDspValue
                           : playbackService.volumeDsp;
+                      const min = 0.0;
+                      const max = 1.0;
+                      final percent = (currentValue - min) / (max - min);
 
-                      return LayoutBuilder(
-                        builder: (context, constraints) {
-                          const double padding = 24.0;
-                          final double trackWidth =
-                              constraints.maxWidth - (padding * 2);
-                          const double min = 0.0;
-                          const double max = 1.0;
-                          final double percent =
-                              (currentValue - min) / (max - min);
-                          final double leftOffset =
-                              padding + (trackWidth * percent);
-
-                          return MouseRegion(
-                            onEnter: (_) => setState(() => _isHovering = true),
-                            onExit: (_) => setState(() => _isHovering = false),
-                            child: Stack(
-                              clipBehavior: Clip.none,
-                              alignment: Alignment.centerLeft,
-                              children: [
-                                Slider(
-                                  thumbColor: scheme.primary,
-                                  activeColor: scheme.primary,
-                                  inactiveColor: scheme.outline,
-                                  min: min,
-                                  max: max,
-                                  value: currentValue,
-                                  onChangeStart: (value) {
-                                    isDragging = true;
-                                    dragVolDsp.value = value;
-                                    playbackService.setVolumeDsp(value);
-                                    _triggerIndicator();
-                                  },
-                                  onChanged: (value) {
-                                    dragVolDsp.value = value;
-                                    playbackService.setVolumeDsp(value);
-                                    // Also trigger indicator on drag
-                                    if (isDragging) _triggerIndicator();
-                                  },
-                                  onChangeEnd: (value) {
-                                    isDragging = false;
-                                    dragVolDsp.value = value;
-                                    playbackService.setVolumeDsp(value);
-                                  },
-                                ),
-                                if (_showCustomIndicator || _isHovering)
-                                  Positioned(
-                                    left:
-                                        leftOffset -
-                                        24.0, // Center the bubble (width 48)
-                                    top: -40,
-                                    child: IgnorePointer(
-                                      child: _CustomValueIndicator(
-                                        value: currentValue * 100,
-                                        suffix: '%',
-                                        color: scheme.primary,
-                                        textColor: scheme.onPrimary,
-                                      ),
+                      return SizedBox(
+                        width: menuWidth,
+                        height: 40.0,
+                        child: MouseRegion(
+                          onEnter: (_) => setState(() => _isHovering = true),
+                          onExit: (_) => setState(() => _isHovering = false),
+                          child: Stack(
+                            clipBehavior: Clip.none,
+                            alignment: Alignment.centerLeft,
+                            children: [
+                              Slider(
+                                thumbColor: scheme.primary,
+                                activeColor: scheme.primary,
+                                inactiveColor: scheme.outline,
+                                min: min,
+                                max: max,
+                                value: currentValue,
+                                onChangeStart: (value) {
+                                  isDragging = true;
+                                  dragVolDsp.value = value;
+                                  playbackService.setVolumeDsp(value);
+                                  _triggerIndicator();
+                                },
+                                onChanged: (value) {
+                                  dragVolDsp.value = value;
+                                  playbackService.setVolumeDsp(value);
+                                  if (isDragging) _triggerIndicator();
+                                },
+                                onChangeEnd: (value) {
+                                  isDragging = false;
+                                  dragVolDsp.value = value;
+                                  playbackService.setVolumeDsp(value);
+                                },
+                              ),
+                              if (_showCustomIndicator || _isHovering)
+                                Positioned(
+                                  left: sliderTrackWidth * percent,
+                                  top: -40,
+                                  child: IgnorePointer(
+                                    child: _CustomValueIndicator(
+                                      value: currentValue * 100,
+                                      suffix: '%',
+                                      color: scheme.primary,
+                                      textColor: scheme.onPrimary,
                                     ),
                                   ),
-                              ],
-                            ),
-                          );
-                        },
+                                ),
+                            ],
+                          ),
+                        ),
                       );
                     },
                   ),
