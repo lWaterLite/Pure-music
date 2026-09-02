@@ -698,14 +698,15 @@ class _EntryState extends State<Entry>
               ),
             ],
           ),
-          StatefulShellBranch(
-            routes: [
-              GoRoute(
-                path: app_paths.CONCERT_PAGE,
-                builder: (context, state) => const ConcertPage(),
-              ),
-            ],
-          ),
+          if (AppSettings.instance.enableConcertPage)
+            StatefulShellBranch(
+              routes: [
+                GoRoute(
+                  path: app_paths.CONCERT_PAGE,
+                  builder: (context, state) => const ConcertPage(),
+                ),
+              ],
+            ),
           StatefulShellBranch(
             routes: [
               GoRoute(

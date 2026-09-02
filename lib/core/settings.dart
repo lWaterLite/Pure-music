@@ -315,6 +315,7 @@ class AppSettings {
   bool enableDetailHeaderCollapseMotion = true;
   bool enableDataTransitionMotion = true;
   bool alwaysShowNowPlayingControls = true;
+  bool enableConcertPage = true;
   int? customCoverColor;
   String? appBackgroundImagePath;
   double appBackgroundImageOpacity = 0.22;
@@ -391,6 +392,10 @@ class AppSettings {
     );
     _instance.alwaysShowNowPlayingControls = normalizedBoolSetting(
       settingsMap['AlwaysShowNowPlayingControls'],
+      defaultValue: true,
+    );
+    _instance.enableConcertPage = normalizedBoolSetting(
+      settingsMap['EnableConcertPage'],
       defaultValue: true,
     );
     _instance.appBackgroundImagePath = normalizedPathSetting(
@@ -498,6 +503,10 @@ class AppSettings {
     );
     _instance.alwaysShowNowPlayingControls = normalizedBoolSetting(
       settingsMap['AlwaysShowNowPlayingControls'],
+      defaultValue: true,
+    );
+    _instance.enableConcertPage = normalizedBoolSetting(
+      settingsMap['EnableConcertPage'],
       defaultValue: true,
     );
 
@@ -961,6 +970,7 @@ class AppSettings {
         'EnableDetailHeaderCollapseMotion': enableDetailHeaderCollapseMotion,
         'EnableDataTransitionMotion': enableDataTransitionMotion,
         'AlwaysShowNowPlayingControls': alwaysShowNowPlayingControls,
+        'EnableConcertPage': enableConcertPage,
         'ArtistSeparator': artistSeparator,
         'LocalLyricFirst': localLyricFirst,
         'PreferredOnlineSource': preferredOnlineSource.name,
