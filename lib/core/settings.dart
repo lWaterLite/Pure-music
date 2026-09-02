@@ -1047,7 +1047,9 @@ class AppSettings {
       settingsMap['WindowSize'] =
           '${sizeToSave.width.toStringAsFixed(1)},${sizeToSave.height.toStringAsFixed(1)}';
 
-      final settingsStr = json.encode(settingsMap);
+      final settingsStr = const JsonEncoder.withIndent(
+        '  ',
+      ).convert(settingsMap);
       final dir = await getSettingsDir();
       final settingsPath = path.join(dir.path, 'settings.json');
       await writeTextFileAtomically(settingsPath, settingsStr);
