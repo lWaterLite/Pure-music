@@ -1,5 +1,6 @@
 import 'dart:convert';
 import 'dart:io';
+import 'package:pure_music/core/global_hotkey_binding.dart';
 import 'package:pure_music/core/setting_action_state.dart';
 import 'package:pure_music/native/rust/api/system_theme.dart';
 import 'package:pure_music/core/enums.dart';
@@ -316,6 +317,8 @@ class AppSettings {
   bool enableDataTransitionMotion = true;
   bool alwaysShowNowPlayingControls = true;
   bool enableConcertPage = true;
+  Map<GlobalHotkeyAction, GlobalHotkeyBinding> globalHotkeys =
+      defaultGlobalHotkeyBindings();
   int? customCoverColor;
   String? appBackgroundImagePath;
   double appBackgroundImageOpacity = 0.22;
@@ -397,6 +400,9 @@ class AppSettings {
     _instance.enableConcertPage = normalizedBoolSetting(
       settingsMap['EnableConcertPage'],
       defaultValue: true,
+    );
+    _instance.globalHotkeys = normalizedGlobalHotkeyBindings(
+      settingsMap['GlobalHotkeys'],
     );
     _instance.appBackgroundImagePath = normalizedPathSetting(
       settingsMap['AppBackgroundImagePath'],
@@ -508,6 +514,9 @@ class AppSettings {
     _instance.enableConcertPage = normalizedBoolSetting(
       settingsMap['EnableConcertPage'],
       defaultValue: true,
+    );
+    _instance.globalHotkeys = normalizedGlobalHotkeyBindings(
+      settingsMap['GlobalHotkeys'],
     );
 
     final sep = settingsMap['ArtistSeparator'];
@@ -971,6 +980,7 @@ class AppSettings {
         'EnableDataTransitionMotion': enableDataTransitionMotion,
         'AlwaysShowNowPlayingControls': alwaysShowNowPlayingControls,
         'EnableConcertPage': enableConcertPage,
+        'GlobalHotkeys': globalHotkeyBindingsToJson(globalHotkeys),
         'ArtistSeparator': artistSeparator,
         'LocalLyricFirst': localLyricFirst,
         'PreferredOnlineSource': preferredOnlineSource.name,
