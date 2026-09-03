@@ -136,8 +136,12 @@ function Update-PubspecVersion([string]$version) {
     if (-not $pattern.IsMatch($content)) {
         throw "Version field not found in pubspec.yaml."
     }
-    $content = $pattern.Replace($content, "version: $version", 1)
-    [System.IO.File]::WriteAllText($pubspecPath, $content, [System.Text.UTF8Encoding]::new($false))
+    $updatedContent = $pattern.Replace($content, "version: $version", 1)
+    if ($updatedContent -eq $content) {
+        Write-Host "pubspec.yaml version already matches: $version" -ForegroundColor Gray
+        return
+    }
+    [System.IO.File]::WriteAllText($pubspecPath, $updatedContent, [System.Text.UTF8Encoding]::new($false))
     Write-Host "Synced pubspec.yaml: version=$version" -ForegroundColor Gray
 }
 
@@ -199,9 +203,39 @@ function Update-BuildVersionFiles([string]$version) {
     Update-VersionJson $version
 }
 
+function Sync-PubResolutionTimestamps() {
+    $pubspecPath = Join-Path $PSScriptRoot "pubspec.yaml"
+    $lockPath = Join-Path $PSScriptRoot "pubspec.lock"
+    $packageConfigPath = Join-Path $PSScriptRoot ".dart_tool\package_config.json"
+    if (-not (Test-Path -LiteralPath $lockPath) -or -not (Test-Path -LiteralPath $packageConfigPath)) {
+        return
+    }
+
+    $pubspecTime = (Get-Item -LiteralPath $pubspecPath).LastWriteTime
+    $syncTime = [DateTime]::Now
+    if ($syncTime -le $pubspecTime) {
+        $syncTime = $pubspecTime.AddSeconds(1)
+    }
+
+    $updated = $false
+    foreach ($path in @($lockPath, $packageConfigPath)) {
+        if ((Get-Item -LiteralPath $path).LastWriteTime -le $pubspecTime) {
+            [System.IO.File]::SetLastWriteTime($path, $syncTime)
+            $updated = $true
+        }
+    }
+    if ($updated) {
+        Write-Host "Synchronized dependency metadata timestamps." -ForegroundColor Gray
+    }
+}
+
 function Invoke-Build([string]$version, [bool]$isPortable) {
     if (-not (Get-Command "flutter" -ErrorAction SilentlyContinue)) {
         throw "flutter command not found in PATH."
+    }
+
+    Invoke-Step "sync version files" {
+        Update-BuildVersionFiles $version
     }
 
     Invoke-Step "pub get" {
@@ -210,7 +244,8 @@ function Invoke-Build([string]$version, [bool]$isPortable) {
         if ((Test-Path (Join-Path $PSScriptRoot "pubspec.lock")) -and (Test-Path $packageConfig)) {
             $yamlTime = (Get-Item (Join-Path $PSScriptRoot "pubspec.yaml")).LastWriteTime
             $lockTime = (Get-Item (Join-Path $PSScriptRoot "pubspec.lock")).LastWriteTime
-            if ($yamlTime -le $lockTime) { $needPubGet = $false }
+            $packageConfigTime = (Get-Item $packageConfig).LastWriteTime
+            if ($yamlTime -lt $lockTime -and $yamlTime -lt $packageConfigTime) { $needPubGet = $false }
         }
         if ($needPubGet) {
             Push-Location $PSScriptRoot
@@ -227,6 +262,7 @@ function Invoke-Build([string]$version, [bool]$isPortable) {
         else {
             Write-Host "Dependencies up to date; skipping pub get." -ForegroundColor Gray
         }
+        Sync-PubResolutionTimestamps
     }
 
     $appIconSource = Join-Path $PSScriptRoot "app_icon.ico"
@@ -237,10 +273,6 @@ function Invoke-Build([string]$version, [bool]$isPortable) {
     }
     else {
         Write-Warning "app_icon.ico not found in project root."
-    }
-
-    Invoke-Step "sync version files" {
-        Update-BuildVersionFiles $version
     }
 
     Invoke-Step "flutter build windows" {

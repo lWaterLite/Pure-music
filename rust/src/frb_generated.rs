@@ -40,7 +40,7 @@ flutter_rust_bridge::frb_generated_boilerplate!(
     default_rust_auto_opaque = RustAutoOpaqueMoi,
 );
 pub(crate) const FLUTTER_RUST_BRIDGE_CODEGEN_VERSION: &str = "2.12.0";
-pub(crate) const FLUTTER_RUST_BRIDGE_CODEGEN_CONTENT_HASH: i32 = -3457955;
+pub(crate) const FLUTTER_RUST_BRIDGE_CODEGEN_CONTENT_HASH: i32 = 2118211022;
 
 // Section: executor
 
@@ -2379,6 +2379,46 @@ fn wire__crate__api__tag_reader__write_lyric_to_path_impl(
         },
     )
 }
+fn wire__crate__api__replay_gain__write_replay_gain_impl(
+    port_: flutter_rust_bridge::for_generated::MessagePort,
+    ptr_: flutter_rust_bridge::for_generated::PlatformGeneralizedUint8ListPtr,
+    rust_vec_len_: i32,
+    data_len_: i32,
+) {
+    FLUTTER_RUST_BRIDGE_HANDLER.wrap_normal::<flutter_rust_bridge::for_generated::SseCodec, _, _>(
+        flutter_rust_bridge::for_generated::TaskInfo {
+            debug_name: "write_replay_gain",
+            port: Some(port_),
+            mode: flutter_rust_bridge::for_generated::FfiCallMode::Normal,
+        },
+        move || {
+            let message = unsafe {
+                flutter_rust_bridge::for_generated::Dart2RustMessageSse::from_wire(
+                    ptr_,
+                    rust_vec_len_,
+                    data_len_,
+                )
+            };
+            let mut deserializer =
+                flutter_rust_bridge::for_generated::SseDeserializer::new(message);
+            let api_paths = <Vec<String>>::sse_decode(&mut deserializer);
+            let api_mode =
+                <crate::api::replay_gain::ReplayGainScanMode>::sse_decode(&mut deserializer);
+            let api_sink = <StreamSink<
+                crate::api::replay_gain::ReplayGainProgress,
+                flutter_rust_bridge::for_generated::SseCodec,
+            >>::sse_decode(&mut deserializer);
+            deserializer.end();
+            move |context| {
+                transform_result_sse::<_, String>((move || {
+                    let output_ok =
+                        crate::api::replay_gain::write_replay_gain(api_paths, api_mode, api_sink)?;
+                    Ok(output_ok)
+                })())
+            }
+        },
+    )
+}
 
 // Section: related_funcs
 
@@ -2466,6 +2506,19 @@ impl SseDecode for StreamSink<f64, flutter_rust_bridge::for_generated::SseCodec>
 impl SseDecode
     for StreamSink<
         crate::api::tag_reader::IndexActionState,
+        flutter_rust_bridge::for_generated::SseCodec,
+    >
+{
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        let mut inner = <String>::sse_decode(deserializer);
+        return StreamSink::deserialize(inner);
+    }
+}
+
+impl SseDecode
+    for StreamSink<
+        crate::api::replay_gain::ReplayGainProgress,
         flutter_rust_bridge::for_generated::SseCodec,
     >
 {
@@ -2981,6 +3034,34 @@ impl SseDecode for (u8, u8, u8, u8) {
     }
 }
 
+impl SseDecode for crate::api::replay_gain::ReplayGainProgress {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        let mut var_completed = <u64>::sse_decode(deserializer);
+        let mut var_total = <u64>::sse_decode(deserializer);
+        let mut var_message = <String>::sse_decode(deserializer);
+        let mut var_failed = <u64>::sse_decode(deserializer);
+        return crate::api::replay_gain::ReplayGainProgress {
+            completed: var_completed,
+            total: var_total,
+            message: var_message,
+            failed: var_failed,
+        };
+    }
+}
+
+impl SseDecode for crate::api::replay_gain::ReplayGainScanMode {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        let mut inner = <i32>::sse_decode(deserializer);
+        return match inner {
+            0 => crate::api::replay_gain::ReplayGainScanMode::Album,
+            1 => crate::api::replay_gain::ReplayGainScanMode::Track,
+            _ => unreachable!("Invalid variant for ReplayGainScanMode: {}", inner),
+        };
+    }
+}
+
 impl SseDecode for crate::api::smtc_flutter::SMTCControlEvent {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
@@ -3314,6 +3395,9 @@ fn pde_ffi_dispatcher_primary_impl(
             rust_vec_len,
             data_len,
         ),
+        61 => {
+            wire__crate__api__replay_gain__write_replay_gain_impl(port, ptr, rust_vec_len, data_len)
+        }
         _ => unreachable!(),
     }
 }
@@ -3673,6 +3757,50 @@ impl flutter_rust_bridge::IntoIntoDart<crate::api::library_db::PlayCountEntry>
     }
 }
 // Codec=Dco (DartCObject based), see doc to use other codecs
+impl flutter_rust_bridge::IntoDart for crate::api::replay_gain::ReplayGainProgress {
+    fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
+        [
+            self.completed.into_into_dart().into_dart(),
+            self.total.into_into_dart().into_dart(),
+            self.message.into_into_dart().into_dart(),
+            self.failed.into_into_dart().into_dart(),
+        ]
+        .into_dart()
+    }
+}
+impl flutter_rust_bridge::for_generated::IntoDartExceptPrimitive
+    for crate::api::replay_gain::ReplayGainProgress
+{
+}
+impl flutter_rust_bridge::IntoIntoDart<crate::api::replay_gain::ReplayGainProgress>
+    for crate::api::replay_gain::ReplayGainProgress
+{
+    fn into_into_dart(self) -> crate::api::replay_gain::ReplayGainProgress {
+        self
+    }
+}
+// Codec=Dco (DartCObject based), see doc to use other codecs
+impl flutter_rust_bridge::IntoDart for crate::api::replay_gain::ReplayGainScanMode {
+    fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
+        match self {
+            Self::Album => 0.into_dart(),
+            Self::Track => 1.into_dart(),
+            _ => unreachable!(),
+        }
+    }
+}
+impl flutter_rust_bridge::for_generated::IntoDartExceptPrimitive
+    for crate::api::replay_gain::ReplayGainScanMode
+{
+}
+impl flutter_rust_bridge::IntoIntoDart<crate::api::replay_gain::ReplayGainScanMode>
+    for crate::api::replay_gain::ReplayGainScanMode
+{
+    fn into_into_dart(self) -> crate::api::replay_gain::ReplayGainScanMode {
+        self
+    }
+}
+// Codec=Dco (DartCObject based), see doc to use other codecs
 impl flutter_rust_bridge::IntoDart for crate::api::smtc_flutter::SMTCControlEvent {
     fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
         match self {
@@ -3875,6 +4003,18 @@ impl SseEncode for StreamSink<f64, flutter_rust_bridge::for_generated::SseCodec>
 impl SseEncode
     for StreamSink<
         crate::api::tag_reader::IndexActionState,
+        flutter_rust_bridge::for_generated::SseCodec,
+    >
+{
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        unimplemented!("")
+    }
+}
+
+impl SseEncode
+    for StreamSink<
+        crate::api::replay_gain::ReplayGainProgress,
         flutter_rust_bridge::for_generated::SseCodec,
     >
 {
@@ -4260,6 +4400,32 @@ impl SseEncode for (u8, u8, u8, u8) {
         <u8>::sse_encode(self.1, serializer);
         <u8>::sse_encode(self.2, serializer);
         <u8>::sse_encode(self.3, serializer);
+    }
+}
+
+impl SseEncode for crate::api::replay_gain::ReplayGainProgress {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        <u64>::sse_encode(self.completed, serializer);
+        <u64>::sse_encode(self.total, serializer);
+        <String>::sse_encode(self.message, serializer);
+        <u64>::sse_encode(self.failed, serializer);
+    }
+}
+
+impl SseEncode for crate::api::replay_gain::ReplayGainScanMode {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        <i32>::sse_encode(
+            match self {
+                crate::api::replay_gain::ReplayGainScanMode::Album => 0,
+                crate::api::replay_gain::ReplayGainScanMode::Track => 1,
+                _ => {
+                    unimplemented!("");
+                }
+            },
+            serializer,
+        );
     }
 }
 

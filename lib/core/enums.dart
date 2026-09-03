@@ -134,6 +134,19 @@ enum TransitionMode {
   }
 }
 
+enum ReplayGainMode {
+  off,
+  album,
+  track;
+
+  static ReplayGainMode? fromString(String name) {
+    for (final value in ReplayGainMode.values) {
+      if (_matchesStoredEnumName(name, value.name)) return value;
+    }
+    return null;
+  }
+}
+
 enum TopBarLyricAnimation {
   slideUp,
   slideDown,

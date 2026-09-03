@@ -2237,6 +2237,55 @@ pub fn write_audio_tags(
     Ok(())
 }
 
+pub(crate) fn write_replay_gain_tags(
+    path: &str,
+    track: Option<(&str, &str)>,
+    album: Option<(&str, &str)>,
+) -> Result<(), String> {
+    let options = ParseOptions::new()
+        .parsing_mode(ParsingMode::Relaxed)
+        .read_cover_art(true)
+        .read_properties(false)
+        .read_tags(true);
+    let mut tagged_file = Probe::open(path)
+        .map_err(|error| format!("Error opening file: {:?}", error.kind()))?
+        .options(options)
+        .read()
+        .map_err(|error| format!("Error reading file: {:?}", error.kind()))?;
+    let tag = if let Some(tag) = tagged_file.primary_tag_mut() {
+        tag
+    } else if let Some(tag) = tagged_file.first_tag_mut() {
+        tag
+    } else {
+        let tag_type = tagged_file.primary_tag_type();
+        tagged_file.insert_tag(Tag::new(tag_type));
+        if let Some(tag) = tagged_file.primary_tag_mut() {
+            tag
+        } else if let Some(tag) = tagged_file.first_tag_mut() {
+            tag
+        } else {
+            return Err("failed to create tag".to_string());
+        }
+    };
+
+    if let Some((gain, peak)) = track {
+        let _ = tag.remove_key(&ItemKey::ReplayGainTrackGain);
+        let _ = tag.remove_key(&ItemKey::ReplayGainTrackPeak);
+        tag.insert_text(ItemKey::ReplayGainTrackGain, gain.to_string());
+        tag.insert_text(ItemKey::ReplayGainTrackPeak, peak.to_string());
+    }
+    if let Some((gain, peak)) = album {
+        let _ = tag.remove_key(&ItemKey::ReplayGainAlbumGain);
+        let _ = tag.remove_key(&ItemKey::ReplayGainAlbumPeak);
+        tag.insert_text(ItemKey::ReplayGainAlbumGain, gain.to_string());
+        tag.insert_text(ItemKey::ReplayGainAlbumPeak, peak.to_string());
+    }
+
+    tagged_file
+        .save_to_path(path, WriteOptions::default())
+        .map_err(|error| format!("Error saving tags: {:?}", error.kind()))
+}
+
 /// for Flutter
 /// 写入歌词到音频文件标签（ID3/VorbisComment/MP4 等），使用 Lofty 的 `ItemKey::Lyrics` 映射
 /// 使用 ParsingMode::Relaxed 兼容更多有问题的标签文件
