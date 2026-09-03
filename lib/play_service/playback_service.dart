@@ -189,20 +189,43 @@ class PlaybackService extends ChangeNotifier {
     _rebuildGaplessPreparation();
   }
 
-  ValueNotifier<bool> get replayGainEnabled => _replayGainEnabled;
-  late final _replayGainEnabled = ValueNotifier(_pref.replayGainEnabled);
+  ValueNotifier<ReplayGainMode> get replayGainMode => _replayGainMode;
+  late final _replayGainMode = ValueNotifier(_pref.replayGainMode);
 
-  void setReplayGainEnabled(bool enabled) {
+  void setReplayGainMode(ReplayGainMode mode) {
+    logger.i('[replay gain] set mode=${mode.name}');
+    AudioEchoLogRecorder.instance.mark(
+      'setReplayGainMode',
+      extra: {'mode': mode.name},
+    );
     _synchronizeGaplessTransition();
-    _pref.replayGainEnabled = enabled;
-    _replayGainEnabled.value = enabled;
-    if (enabled) {
+    _pref.replayGainMode = mode;
+    _replayGainMode.value = mode;
+    if (mode != ReplayGainMode.off) {
       final curr = nowPlaying;
       if (curr != null) _loadCurrentReplayGain(curr);
     } else {
       _replayGainRequestToken++;
       _player.replayGainDb = null;
       _eq.reapplyOutputGain();
+    }
+    _rebuildGaplessPreparation();
+  }
+
+  void refreshReplayGain() {
+    logger.i('[replay gain] refresh mode=${_pref.replayGainMode.name}');
+    AudioEchoLogRecorder.instance.mark(
+      'refreshReplayGain',
+      extra: {'mode': _pref.replayGainMode.name},
+    );
+    _synchronizeGaplessTransition();
+    final curr = nowPlaying;
+    if (_pref.replayGainMode == ReplayGainMode.off || curr == null) {
+      _replayGainRequestToken++;
+      _player.replayGainDb = null;
+      _eq.reapplyOutputGain();
+    } else {
+      _loadCurrentReplayGain(curr);
     }
     _rebuildGaplessPreparation();
   }
@@ -222,10 +245,44 @@ class PlaybackService extends ChangeNotifier {
     if (!_pref.replayGainEnabled) return null;
     try {
       final meta = await rust_tag_reader.readAudioExtraMetadata(path: path);
-      final raw = meta.replaygainTrackGain;
-      if (raw == null || raw.isEmpty) return null;
-      return double.tryParse(raw.replaceAll('dB', '').trim());
-    } catch (_) {
+      final values = switch (_pref.replayGainMode) {
+        ReplayGainMode.album => [
+          ('album', meta.replaygainAlbumGain),
+          ('track', meta.replaygainTrackGain),
+        ],
+        ReplayGainMode.track => [
+          ('track', meta.replaygainTrackGain),
+          ('album', meta.replaygainAlbumGain),
+        ],
+        ReplayGainMode.off => const <(String, String?)>[],
+      };
+      for (final (source, raw) in values) {
+        if (raw == null || raw.trim().isEmpty) continue;
+        final gain = double.tryParse(
+          raw.replaceAll(RegExp('dB', caseSensitive: false), '').trim(),
+        );
+        if (gain != null && gain.isFinite) {
+          logger.i(
+            '[replay gain] resolved mode=${_pref.replayGainMode.name} '
+            'source=$source gain=$gain path=$path',
+          );
+          return gain;
+        }
+        logger.w(
+          '[replay gain] invalid tag mode=${_pref.replayGainMode.name} '
+          'source=$source value=$raw path=$path',
+        );
+      }
+      logger.i(
+        '[replay gain] unavailable mode=${_pref.replayGainMode.name} path=$path',
+      );
+      return null;
+    } catch (error, trace) {
+      logger.w(
+        '[replay gain] read failed mode=${_pref.replayGainMode.name} path=$path',
+        error: error,
+        stackTrace: trace,
+      );
       return null;
     }
   }
