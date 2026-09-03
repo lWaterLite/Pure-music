@@ -9,6 +9,7 @@ import 'api/installed_font.dart';
 import 'api/library_db.dart';
 import 'api/logger.dart';
 import 'api/ne.dart';
+import 'api/replay_gain.dart';
 import 'api/smart_sort.dart';
 import 'api/smart_transition.dart';
 import 'api/smtc_flutter.dart';
@@ -76,7 +77,7 @@ class RustLib extends BaseEntrypoint<RustLibApi, RustLibApiImpl, RustLibWire> {
   String get codegenVersion => '2.12.0';
 
   @override
-  int get rustContentHash => -3457955;
+  int get rustContentHash => 2118211022;
 
   static const kDefaultExternalLibraryLoaderConfig =
       ExternalLibraryLoaderConfig(
@@ -331,6 +332,11 @@ abstract class RustLibApi extends BaseApi {
   Future<void> crateApiTagReaderWriteLyricToPath({
     required String path,
     required String lyric,
+  });
+
+  Stream<ReplayGainProgress> crateApiReplayGainWriteReplayGain({
+    required List<String> paths,
+    required ReplayGainScanMode mode,
   });
 
   RustArcIncrementStrongCountFnType
@@ -2377,6 +2383,46 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
         argNames: ['path', 'lyric'],
       );
 
+  @override
+  Stream<ReplayGainProgress> crateApiReplayGainWriteReplayGain({
+    required List<String> paths,
+    required ReplayGainScanMode mode,
+  }) {
+    final sink = RustStreamSink<ReplayGainProgress>();
+    unawaited(
+      handler.executeNormal(
+        NormalTask(
+          callFfi: (port_) {
+            final serializer = SseSerializer(generalizedFrbRustBinding);
+            sse_encode_list_String(paths, serializer);
+            sse_encode_replay_gain_scan_mode(mode, serializer);
+            sse_encode_StreamSink_replay_gain_progress_Sse(sink, serializer);
+            pdeCallFfi(
+              generalizedFrbRustBinding,
+              serializer,
+              funcId: 61,
+              port: port_,
+            );
+          },
+          codec: SseCodec(
+            decodeSuccessData: sse_decode_unit,
+            decodeErrorData: sse_decode_String,
+          ),
+          constMeta: kCrateApiReplayGainWriteReplayGainConstMeta,
+          argValues: [paths, mode, sink],
+          apiImpl: this,
+        ),
+      ),
+    );
+    return sink.stream;
+  }
+
+  TaskConstMeta get kCrateApiReplayGainWriteReplayGainConstMeta =>
+      const TaskConstMeta(
+        debugName: 'write_replay_gain',
+        argNames: ['paths', 'mode', 'sink'],
+      );
+
   RustArcIncrementStrongCountFnType
   get rust_arc_increment_strong_count_NetEaseCloud => wire
       .rust_arc_increment_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerNetEaseCloud;
@@ -2479,6 +2525,13 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   RustStreamSink<IndexActionState> dco_decode_StreamSink_index_action_state_Sse(
     dynamic raw,
   ) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    throw UnimplementedError();
+  }
+
+  @protected
+  RustStreamSink<ReplayGainProgress>
+  dco_decode_StreamSink_replay_gain_progress_Sse(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     throw UnimplementedError();
   }
@@ -2878,6 +2931,26 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  ReplayGainProgress dco_decode_replay_gain_progress(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    final arr = raw as List<dynamic>;
+    if (arr.length != 4)
+      throw Exception('unexpected arr length: expect 4 but see ${arr.length}');
+    return ReplayGainProgress(
+      completed: dco_decode_u_64(arr[0]),
+      total: dco_decode_u_64(arr[1]),
+      message: dco_decode_String(arr[2]),
+      failed: dco_decode_u_64(arr[3]),
+    );
+  }
+
+  @protected
+  ReplayGainScanMode dco_decode_replay_gain_scan_mode(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    return ReplayGainScanMode.values[raw as int];
+  }
+
+  @protected
   SMTCControlEvent dco_decode_smtc_control_event(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     return SMTCControlEvent.values[raw as int];
@@ -3089,6 +3162,13 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   RustStreamSink<IndexActionState> sse_decode_StreamSink_index_action_state_Sse(
     SseDeserializer deserializer,
   ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    throw UnimplementedError('Unreachable ()');
+  }
+
+  @protected
+  RustStreamSink<ReplayGainProgress>
+  sse_decode_StreamSink_replay_gain_progress_Sse(SseDeserializer deserializer) {
     // Codec=Sse (Serialization based), see doc to use other codecs
     throw UnimplementedError('Unreachable ()');
   }
@@ -3603,6 +3683,32 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  ReplayGainProgress sse_decode_replay_gain_progress(
+    SseDeserializer deserializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    var var_completed = sse_decode_u_64(deserializer);
+    var var_total = sse_decode_u_64(deserializer);
+    var var_message = sse_decode_String(deserializer);
+    var var_failed = sse_decode_u_64(deserializer);
+    return ReplayGainProgress(
+      completed: var_completed,
+      total: var_total,
+      message: var_message,
+      failed: var_failed,
+    );
+  }
+
+  @protected
+  ReplayGainScanMode sse_decode_replay_gain_scan_mode(
+    SseDeserializer deserializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    var inner = sse_decode_i_32(deserializer);
+    return ReplayGainScanMode.values[inner];
+  }
+
+  @protected
   SMTCControlEvent sse_decode_smtc_control_event(SseDeserializer deserializer) {
     // Codec=Sse (Serialization based), see doc to use other codecs
     var inner = sse_decode_i_32(deserializer);
@@ -3872,6 +3978,23 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       self.setupAndSerialize(
         codec: SseCodec(
           decodeSuccessData: sse_decode_index_action_state,
+          decodeErrorData: sse_decode_AnyhowException,
+        ),
+      ),
+      serializer,
+    );
+  }
+
+  @protected
+  void sse_encode_StreamSink_replay_gain_progress_Sse(
+    RustStreamSink<ReplayGainProgress> self,
+    SseSerializer serializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_String(
+      self.setupAndSerialize(
+        codec: SseCodec(
+          decodeSuccessData: sse_decode_replay_gain_progress,
           decodeErrorData: sse_decode_AnyhowException,
         ),
       ),
@@ -4354,6 +4477,27 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     sse_encode_u_8(self.$2, serializer);
     sse_encode_u_8(self.$3, serializer);
     sse_encode_u_8(self.$4, serializer);
+  }
+
+  @protected
+  void sse_encode_replay_gain_progress(
+    ReplayGainProgress self,
+    SseSerializer serializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_u_64(self.completed, serializer);
+    sse_encode_u_64(self.total, serializer);
+    sse_encode_String(self.message, serializer);
+    sse_encode_u_64(self.failed, serializer);
+  }
+
+  @protected
+  void sse_encode_replay_gain_scan_mode(
+    ReplayGainScanMode self,
+    SseSerializer serializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_i_32(self.index, serializer);
   }
 
   @protected

@@ -59,6 +59,9 @@ unicode-normalization = "0.1.24"
 kmeans_colors = "0.7"
 palette = "0.7"
 symphonia = { version = "0.6.0", default-features = false, features = [
+    "aac",
+    "adpcm",
+    "alac",
     "ape",
     "caf",
     "flac",
@@ -73,7 +76,9 @@ symphonia = { version = "0.6.0", default-features = false, features = [
     "pcm",
     "aiff",
     "wav",
+    "vorbis",
 ] }
+ebur128 = "0.1.10"
 
 [lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(frb_expand)'] }

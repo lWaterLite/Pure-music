@@ -92,7 +92,7 @@ class _SettingsIssuePageState extends State<SettingsIssuePage> {
         'eqAutoGainEnabled': pb.eqAutoGainEnabled,
         'eqAutoHeadroomDb': pb.eqAutoHeadroomDb,
         'reinitOnSetSource': pb.reinitOnSetSource,
-        'replayGainEnabled': pb.replayGainEnabled,
+        'replayGainMode': pb.replayGainMode.name,
         'transitionMode': pb.transitionMode.name,
         'transitionFadeOutMs': pb.transitionFadeOutMs,
         'transitionFadeInMs': pb.transitionFadeInMs,
