@@ -347,26 +347,27 @@ class _NavItem extends StatelessWidget {
                       color: fg.withValues(alpha: 0.90),
                     ),
                   ),
-                  Opacity(
-                    opacity: textOpacity,
-                    child: Padding(
-                      padding: const EdgeInsets.only(left: textLeftPad),
-                      child: Text(
-                        label,
-                        maxLines: 1,
-                        overflow: TextOverflow.fade,
-                        softWrap: false,
-                        style: TextStyle(
-                          color: fg,
-                          fontSize: 14.5,
-                          fontWeight: selected
-                              ? AppType.weightSemibold
-                              : AppType.weightMedium,
+                  Expanded(
+                    child: Opacity(
+                      opacity: textOpacity,
+                      child: Padding(
+                        padding: const EdgeInsets.only(left: textLeftPad),
+                        child: Text(
+                          label,
+                          maxLines: 1,
+                          overflow: TextOverflow.fade,
+                          softWrap: false,
+                          style: TextStyle(
+                            color: fg,
+                            fontSize: 14.5,
+                            fontWeight: selected
+                                ? AppType.weightSemibold
+                                : AppType.weightMedium,
+                          ),
                         ),
                       ),
                     ),
                   ),
-                  const Spacer(),
                 ],
               ),
             ),

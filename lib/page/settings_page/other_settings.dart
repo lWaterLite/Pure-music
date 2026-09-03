@@ -22,11 +22,19 @@ class _ReplayGainControlState extends State<ReplayGainControl> {
   Widget build(BuildContext context) {
     return SettingsTile(
       description: 'ReplayGain',
-      action: Switch(
-        value: pref.replayGainEnabled,
-        onChanged: (value) async {
-          setState(() => pref.replayGainEnabled = value);
-          PlayService.instance.playbackService.setReplayGainEnabled(value);
+      subtitle: '优先使用选定类型，缺失时自动回退到另一种增益',
+      action: SegmentedButton<ReplayGainMode>(
+        showSelectedIcon: false,
+        segments: const [
+          ButtonSegment(value: ReplayGainMode.off, label: Text('关闭')),
+          ButtonSegment(value: ReplayGainMode.album, label: Text('专辑增益')),
+          ButtonSegment(value: ReplayGainMode.track, label: Text('音轨增益')),
+        ],
+        selected: {pref.replayGainMode},
+        onSelectionChanged: (values) async {
+          final mode = values.first;
+          setState(() => pref.replayGainMode = mode);
+          PlayService.instance.playbackService.setReplayGainMode(mode);
           await AppPreference.instance.save();
         },
       ),

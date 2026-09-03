@@ -504,7 +504,7 @@ class PlaybackPreference {
   bool lastShuffleActive;
   List<String> lastOriginalPlaylistPaths;
   bool reinitOnSetSource;
-  bool replayGainEnabled;
+  ReplayGainMode replayGainMode;
   TransitionMode transitionMode;
   int transitionFadeOutMs;
   int transitionFadeInMs;
@@ -514,7 +514,7 @@ class PlaybackPreference {
     this.volumeDsp,
     this.eqGains,
     this.eqPresets, {
-    this.replayGainEnabled = false,
+    this.replayGainMode = ReplayGainMode.off,
     this.eqPreampDb = 0.0,
     this.eqAutoGainEnabled = true,
     this.eqAutoHeadroomDb = 1.0,
@@ -543,7 +543,7 @@ class PlaybackPreference {
     'lastShuffleActive': lastShuffleActive,
     'lastOriginalPlaylistPaths': lastOriginalPlaylistPaths,
     'reinitOnSetSource': reinitOnSetSource,
-    'replayGainEnabled': replayGainEnabled,
+    'replayGainMode': replayGainMode.name,
     'transitionMode': transitionMode.name,
     'transitionFadeOutMs': transitionFadeOutMs,
     'transitionFadeInMs': transitionFadeInMs,
@@ -593,10 +593,11 @@ class PlaybackPreference {
         map['reinitOnSetSource'],
         defaultValue: false,
       ),
-      replayGainEnabled: _normalizedBool(
-        map['replayGainEnabled'],
-        defaultValue: false,
-      ),
+      replayGainMode:
+          ReplayGainMode.fromString(map['replayGainMode']?.toString() ?? '') ??
+          (_normalizedBool(map['replayGainEnabled'], defaultValue: false)
+              ? ReplayGainMode.track
+              : ReplayGainMode.off),
       transitionMode: _transitionModeFromStored(map),
       transitionFadeOutMs: _normalizedBoundedInt(
         map['transitionFadeOutMs'],
@@ -612,6 +613,8 @@ class PlaybackPreference {
       ),
     );
   }
+
+  bool get replayGainEnabled => replayGainMode != ReplayGainMode.off;
 }
 
 class AppPreference {

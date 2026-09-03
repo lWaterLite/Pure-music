@@ -9,6 +9,7 @@ import 'api/installed_font.dart';
 import 'api/library_db.dart';
 import 'api/logger.dart';
 import 'api/ne.dart';
+import 'api/replay_gain.dart';
 import 'api/smart_sort.dart';
 import 'api/smart_transition.dart';
 import 'api/smtc_flutter.dart';
@@ -90,6 +91,10 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   RustStreamSink<IndexActionState> dco_decode_StreamSink_index_action_state_Sse(
     dynamic raw,
   );
+
+  @protected
+  RustStreamSink<ReplayGainProgress>
+  dco_decode_StreamSink_replay_gain_progress_Sse(dynamic raw);
 
   @protected
   RustStreamSink<SMTCControlEvent> dco_decode_StreamSink_smtc_control_event_Sse(
@@ -230,6 +235,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   (int, int, int, int) dco_decode_record_u_8_u_8_u_8_u_8(dynamic raw);
 
   @protected
+  ReplayGainProgress dco_decode_replay_gain_progress(dynamic raw);
+
+  @protected
+  ReplayGainScanMode dco_decode_replay_gain_scan_mode(dynamic raw);
+
+  @protected
   SMTCControlEvent dco_decode_smtc_control_event(dynamic raw);
 
   @protected
@@ -317,6 +328,10 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   RustStreamSink<IndexActionState> sse_decode_StreamSink_index_action_state_Sse(
     SseDeserializer deserializer,
   );
+
+  @protected
+  RustStreamSink<ReplayGainProgress>
+  sse_decode_StreamSink_replay_gain_progress_Sse(SseDeserializer deserializer);
 
   @protected
   RustStreamSink<SMTCControlEvent> sse_decode_StreamSink_smtc_control_event_Sse(
@@ -489,6 +504,16 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  ReplayGainProgress sse_decode_replay_gain_progress(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  ReplayGainScanMode sse_decode_replay_gain_scan_mode(
+    SseDeserializer deserializer,
+  );
+
+  @protected
   SMTCControlEvent sse_decode_smtc_control_event(SseDeserializer deserializer);
 
   @protected
@@ -589,6 +614,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   void sse_encode_StreamSink_index_action_state_Sse(
     RustStreamSink<IndexActionState> self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_StreamSink_replay_gain_progress_Sse(
+    RustStreamSink<ReplayGainProgress> self,
     SseSerializer serializer,
   );
 
@@ -805,6 +836,18 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   void sse_encode_record_u_8_u_8_u_8_u_8(
     (int, int, int, int) self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_replay_gain_progress(
+    ReplayGainProgress self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_replay_gain_scan_mode(
+    ReplayGainScanMode self,
     SseSerializer serializer,
   );
 
