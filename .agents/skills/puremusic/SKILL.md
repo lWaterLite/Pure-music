@@ -51,6 +51,8 @@ description: Pure-music 项目开发指南，覆盖 Windows Flutter/Dart 前端�
 - 使用 `Symbols.xxx` 图标；颜色透明度使用 `Color.withValues(alpha:)`。
 - 不在 `build` 中启动动画、读配置或触发其他副作用；异步回调更新界面前检查 `mounted`。
 - 把 `lib/native/rust/` 和 `rust/src/frb_generated.rs` 中的绑定视为生成代码；修改 Rust API 后通过项目现有生成配置更新，不手工维护生成结果。
+- 新增或调整功能时，同步接入项目日志系统：记录用户触发、关键状态/分支、成功结果和可诊断的失败原因；Dart 使用 `logger`，Rust 通过 `log_to_dart` 转发。涉及播放诊断的用户操作，同时按既有模式写入 `AudioEchoLogRecorder`。
+- 不为逐帧、高频轮询或无业务意义的内部细节逐次写日志；日志应包含足以关联操作的上下文，但避免记录敏感内容。
 - 桌面歌词只把歌词文件明确标出的长空白行视为过渡行；普通歌词行之间的时间间隔不自动生成插播空白。
 - 演出模式的编排顺序只替换当前播放队列，不修改来源歌单；调整参数时复用已缓存的音频分析结果。
 
