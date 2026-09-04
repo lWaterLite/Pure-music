@@ -2746,15 +2746,38 @@ class _AboutTabContent extends StatelessWidget {
           icon: Symbols.code,
         ),
         SizedBox(height: 16.0),
+        _AboutLinkItem(
+          title: '分支仓库',
+          url: 'https://github.com/lWaterLite/Pure-music',
+          actionLabel: '分支仓库',
+          icon: Symbols.build,
+        ),
+        SizedBox(height: 16.0),
         CreateIssueTile(),
-        _AboutContributorsSection(),
+        _AboutContributorsSection(
+          title: '主仓库贡献者',
+          repositorySlug: AppPreference.defaultUpdateRepoSlug,
+        ),
+        _AboutContributorsSection(
+          title: 'Fork 仓库贡献者',
+          repositorySlug: 'lWaterLite/Pure-music',
+          excludedRepositorySlug: AppPreference.defaultUpdateRepoSlug,
+        ),
       ],
     );
   }
 }
 
 class _AboutContributorsSection extends StatefulWidget {
-  const _AboutContributorsSection();
+  const _AboutContributorsSection({
+    required this.title,
+    required this.repositorySlug,
+    this.excludedRepositorySlug,
+  });
+
+  final String title;
+  final String repositorySlug;
+  final String? excludedRepositorySlug;
 
   @override
   State<_AboutContributorsSection> createState() =>
@@ -2762,49 +2785,101 @@ class _AboutContributorsSection extends StatefulWidget {
 }
 
 class _AboutContributorsSectionState extends State<_AboutContributorsSection> {
-  static List<_AboutContributor>? _cachedContributors;
-  static Future<List<_AboutContributor>>? _pendingRequest;
+  static final Map<String, List<_AboutContributor>> _cachedContributors = {};
+  static final Map<String, Future<List<_AboutContributor>>> _pendingRequests =
+      {};
 
   late List<_AboutContributor> _contributors;
 
   @override
   void initState() {
     super.initState();
-    _contributors = _cachedContributors ?? const [];
-    if (_cachedContributors == null) _loadContributors();
+    _contributors = const [];
+    _loadContributors();
   }
 
   Future<void> _loadContributors() async {
     try {
-      final contributors = await _getContributors();
+      final repositoryCacheHit = _cachedContributors.containsKey(
+        widget.repositorySlug,
+      );
+      final excludedRepositorySlug = widget.excludedRepositorySlug;
+      final excludedRepositoryCacheHit = excludedRepositorySlug != null &&
+          _cachedContributors.containsKey(excludedRepositorySlug);
+      final contributors = await _getContributors(widget.repositorySlug);
+      final excludedContributors = excludedRepositorySlug == null
+          ? const <_AboutContributor>[]
+          : await _getContributors(excludedRepositorySlug);
+      final excludedLogins = excludedContributors
+          .map((contributor) => contributor.login.toLowerCase())
+          .toSet();
+      final overlappingContributors = excludedLogins.isEmpty
+          ? const <_AboutContributor>[]
+          : contributors
+                .where(
+                  (contributor) =>
+                      excludedLogins.contains(contributor.login.toLowerCase()),
+                )
+                .toList(growable: false);
+      final visibleContributors = overlappingContributors.isEmpty
+          ? contributors
+          : List<_AboutContributor>.unmodifiable(
+              contributors.where(
+                (contributor) => !excludedLogins.contains(
+                  contributor.login.toLowerCase(),
+                ),
+              ),
+            );
+      logger.i(
+        '[About] contributors resolved: repo=${widget.repositorySlug}, '
+        'excludedRepo=${excludedRepositorySlug ?? 'none'}, '
+        'repoCacheHit=$repositoryCacheHit, '
+        'excludedRepoCacheHit=$excludedRepositoryCacheHit, '
+        'raw=${contributors.length}, excluded=${overlappingContributors.length}, '
+        'visible=${visibleContributors.length}, matches='
+        '${overlappingContributors.map((item) => item.login).join(',')}',
+      );
       if (!mounted) return;
-      setState(() => _contributors = contributors);
+      setState(() => _contributors = visibleContributors);
+      logger.i(
+        '[About] contributors applied to UI: repo=${widget.repositorySlug}, '
+        'visible=${visibleContributors.length}',
+      );
     } catch (error, trace) {
-      logger.w('[About] contributors request failed: ${error.runtimeType}');
+      logger.w(
+        '[About] contributors request failed for '
+        '${widget.repositorySlug}: ${error.runtimeType}',
+      );
       logger.d(trace.toString());
     }
   }
 
-  static Future<List<_AboutContributor>> _getContributors() async {
-    final cached = _cachedContributors;
+  static Future<List<_AboutContributor>> _getContributors(
+    String repositorySlug,
+  ) async {
+    final cached = _cachedContributors[repositorySlug];
     if (cached != null) return cached;
 
-    final pending = _pendingRequest;
+    final pending = _pendingRequests[repositorySlug];
     if (pending != null) return pending;
 
-    final request = _fetchContributors();
-    _pendingRequest = request;
+    final request = _fetchContributors(repositorySlug);
+    _pendingRequests[repositorySlug] = request;
     try {
       final contributors = await request;
-      _cachedContributors = contributors;
+      _cachedContributors[repositorySlug] = contributors;
       return contributors;
     } finally {
-      if (identical(_pendingRequest, request)) _pendingRequest = null;
+      if (identical(_pendingRequests[repositorySlug], request)) {
+        _pendingRequests.remove(repositorySlug);
+      }
     }
   }
 
-  static Future<List<_AboutContributor>> _fetchContributors() async {
-    final slug = gh.RepositorySlug.full(AppPreference.defaultUpdateRepoSlug);
+  static Future<List<_AboutContributor>> _fetchContributors(
+    String repositorySlug,
+  ) async {
+    final slug = gh.RepositorySlug.full(repositorySlug);
     final response = await AppSettings.github.repositories
         .listContributors(slug, anon: true)
         .toList()
@@ -2839,7 +2914,7 @@ class _AboutContributorsSectionState extends State<_AboutContributorsSection> {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          const _SettingsSectionHeader('贡献者'),
+          _SettingsSectionHeader(widget.title),
           const SizedBox(height: 8.0),
           LayoutBuilder(
             builder: (context, constraints) {
@@ -3110,9 +3185,10 @@ class _AboutVersionItemState extends State<_AboutVersionItem> {
 
   @override
   Widget build(BuildContext context) {
+    const String versionString = '${AppSettings.version} built by lWaterLite';
     return SettingsTile(
       description: '当前版本',
-      subtitle: AppSettings.version,
+      subtitle: versionString,
       action: FilledButton.tonalIcon(
         onPressed: _isChecking ? null : _check,
         icon: _isChecking
