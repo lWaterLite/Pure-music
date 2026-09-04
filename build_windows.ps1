@@ -203,6 +203,23 @@ function Update-BuildVersionFiles([string]$version) {
     Update-VersionJson $version
 }
 
+function Get-FlutterFrameworkVersion() {
+    $flutterCommand = Get-Command "flutter" -ErrorAction SilentlyContinue
+    if (-not $flutterCommand) { return $null }
+
+    $flutterBinDir = Split-Path -Parent $flutterCommand.Source
+    $versionFile = Join-Path (Split-Path -Parent $flutterBinDir) "bin\cache\flutter.version.json"
+    if (-not (Test-Path -LiteralPath $versionFile -PathType Leaf)) { return $null }
+
+    try {
+        return ([System.IO.File]::ReadAllText($versionFile) | ConvertFrom-Json).frameworkVersion
+    }
+    catch {
+        Write-Warning "Unable to read Flutter framework version: $($_.Exception.Message)"
+        return $null
+    }
+}
+
 function Sync-PubResolutionTimestamps() {
     $pubspecPath = Join-Path $PSScriptRoot "pubspec.yaml"
     $lockPath = Join-Path $PSScriptRoot "pubspec.lock"
@@ -211,21 +228,26 @@ function Sync-PubResolutionTimestamps() {
         return
     }
 
-    $pubspecTime = (Get-Item -LiteralPath $pubspecPath).LastWriteTime
-    $syncTime = [DateTime]::Now
+    $pubspecTime = (Get-Item -LiteralPath $pubspecPath).LastWriteTimeUtc
+    $syncTime = [DateTime]::UtcNow
     if ($syncTime -le $pubspecTime) {
-        $syncTime = $pubspecTime.AddSeconds(1)
+        $syncTime = $pubspecTime.AddSeconds(2)
     }
 
     $updated = $false
-    foreach ($path in @($lockPath, $packageConfigPath)) {
-        if ((Get-Item -LiteralPath $path).LastWriteTime -le $pubspecTime) {
-            [System.IO.File]::SetLastWriteTime($path, $syncTime)
+    $metadataPaths = @($lockPath, $packageConfigPath)
+    $packageGraphPath = Join-Path $PSScriptRoot ".dart_tool\package_graph.json"
+    if (Test-Path -LiteralPath $packageGraphPath -PathType Leaf) {
+        $metadataPaths += $packageGraphPath
+    }
+    foreach ($path in $metadataPaths) {
+        if ((Get-Item -LiteralPath $path).LastWriteTimeUtc -le $pubspecTime) {
+            [System.IO.File]::SetLastWriteTimeUtc($path, $syncTime)
             $updated = $true
         }
     }
     if ($updated) {
-        Write-Host "Synchronized dependency metadata timestamps." -ForegroundColor Gray
+        Write-Host "Synchronized dependency metadata timestamps (UTC)." -ForegroundColor Gray
     }
 }
 
@@ -242,10 +264,21 @@ function Invoke-Build([string]$version, [bool]$isPortable) {
         $needPubGet = $true
         $packageConfig = Join-Path $PSScriptRoot ".dart_tool\package_config.json"
         if ((Test-Path (Join-Path $PSScriptRoot "pubspec.lock")) -and (Test-Path $packageConfig)) {
-            $yamlTime = (Get-Item (Join-Path $PSScriptRoot "pubspec.yaml")).LastWriteTime
-            $lockTime = (Get-Item (Join-Path $PSScriptRoot "pubspec.lock")).LastWriteTime
-            $packageConfigTime = (Get-Item $packageConfig).LastWriteTime
-            if ($yamlTime -lt $lockTime -and $yamlTime -lt $packageConfigTime) { $needPubGet = $false }
+            $yamlTime = (Get-Item (Join-Path $PSScriptRoot "pubspec.yaml")).LastWriteTimeUtc
+            $lockTime = (Get-Item (Join-Path $PSScriptRoot "pubspec.lock")).LastWriteTimeUtc
+            $packageConfigTime = (Get-Item $packageConfig).LastWriteTimeUtc
+            $versionPath = Join-Path $PSScriptRoot ".dart_tool\version"
+            $expectedFlutterVersion = Get-FlutterFrameworkVersion
+            $resolvedFlutterVersion = if (Test-Path -LiteralPath $versionPath) {
+                (Get-Content -LiteralPath $versionPath -Raw).Trim()
+            }
+            else {
+                ""
+            }
+            $versionMatches = [string]::IsNullOrWhiteSpace($expectedFlutterVersion) -or $resolvedFlutterVersion -eq $expectedFlutterVersion
+            if ($yamlTime -lt $lockTime -and $yamlTime -lt $packageConfigTime -and $versionMatches) {
+                $needPubGet = $false
+            }
         }
         if ($needPubGet) {
             Push-Location $PSScriptRoot
@@ -301,6 +334,10 @@ function Invoke-Build([string]$version, [bool]$isPortable) {
             if ($LASTEXITCODE -ne 0) { throw "Flutter Windows build failed with exit code $LASTEXITCODE." }
         }
         finally { Pop-Location }
+    }
+
+    Invoke-Step "finalize dependency metadata" {
+        Sync-PubResolutionTimestamps
     }
 }
 
