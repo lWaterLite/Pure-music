@@ -701,7 +701,7 @@ class AppPreference {
 
   String customCpFeedbackKey = '';
   String updateRepoSlug = defaultUpdateRepoSlug;
-  bool autoCheckUpdate = true;
+  bool autoCheckUpdate = false;
   String? lastUpdateCheckTime;
   String? lastSeenUpdateTag;
   List<String> updateCheckUrls = List.of(defaultUpdateCheckUrls);
@@ -793,7 +793,7 @@ class AppPreference {
     );
     autoCheckUpdate = _normalizedBool(
       prefMap['autoCheckUpdate'],
-      defaultValue: true,
+      defaultValue: false,
     );
     lastUpdateCheckTime = _normalizedNullableString(
       prefMap['lastUpdateCheckTime'],
