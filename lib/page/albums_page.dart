@@ -3,10 +3,14 @@ import 'dart:async';
 import 'package:pure_music/core/preference.dart';
 import 'package:pure_music/core/enums.dart';
 import 'package:pure_music/component/album_tile.dart';
+import 'package:pure_music/component/replay_gain_dialog.dart';
 import 'package:pure_music/core/list_action_state.dart';
+import 'package:pure_music/core/menu_styles.dart';
 import 'package:pure_music/core/page_sort.dart';
 import 'package:pure_music/core/utils.dart';
 import 'package:pure_music/library/audio_library.dart';
+import 'package:pure_music/native/rust/api/replay_gain.dart'
+    as rust_replay_gain;
 import 'package:pure_music/page/uni_page.dart';
 import 'package:pure_music/page/uni_page_components.dart';
 import 'package:flutter/material.dart';
@@ -137,6 +141,64 @@ class _AlbumsPageState extends State<AlbumsPage> {
               multiSelectController: _multiSelectController,
               toAudios: (selected) =>
                   selected.expand((album) => album.works).toList(),
+            ),
+            ListenableBuilder(
+              listenable: _multiSelectController,
+              builder: (context, _) {
+                final selectedAlbums = contentList
+                    .where(_multiSelectController.selected.contains)
+                    .where((album) => album.works.isNotEmpty)
+                    .toList(growable: false);
+                return MenuAnchor(
+                  style: appMenuStyle,
+                  menuChildren: [
+                    MenuItemButton(
+                      style: appMenuItemStyle,
+                      onPressed: selectedAlbums.isEmpty
+                          ? null
+                          : () => showReplayGainBatchWriteDialog(
+                              context: context,
+                              albums: selectedAlbums,
+                              mode: rust_replay_gain.ReplayGainScanMode.album,
+                            ),
+                      child: const Text('专辑增益'),
+                    ),
+                    MenuItemButton(
+                      style: appMenuItemStyle,
+                      onPressed: selectedAlbums.isEmpty
+                          ? null
+                          : () => showReplayGainBatchWriteDialog(
+                              context: context,
+                              albums: selectedAlbums,
+                              mode: rust_replay_gain.ReplayGainScanMode.track,
+                            ),
+                      child: const Text('音轨增益'),
+                    ),
+                  ],
+                  builder: (context, controller, _) => FilledButton.icon(
+                    onPressed: selectedAlbums.isEmpty
+                        ? null
+                        : () {
+                            if (controller.isOpen) {
+                              controller.close();
+                            } else {
+                              controller.open();
+                            }
+                          },
+                    icon: const Icon(
+                      Symbols.sound_detection_glass_break,
+                      size: 20,
+                    ),
+                    label: const Text('回放增益'),
+                    style: const ButtonStyle(
+                      fixedSize: WidgetStatePropertyAll(Size.fromHeight(40)),
+                      padding: WidgetStatePropertyAll(
+                        EdgeInsets.symmetric(horizontal: 16),
+                      ),
+                    ),
+                  ),
+                );
+              },
             ),
             MultiSelectSelectOrClearAll(
               multiSelectController: _multiSelectController,
