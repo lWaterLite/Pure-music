@@ -323,6 +323,11 @@ abstract class RustLibApi extends BaseApi {
     required bool forceMetadataCheck,
   });
 
+  Future<void> crateApiTagReaderWriteAudioCover({
+    required String path,
+    required List<int> bytes,
+  });
+
   Future<void> crateApiTagReaderWriteAudioTags({
     required String path,
     required WriteTagPayload payload,
@@ -2312,6 +2317,41 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       );
 
   @override
+  Future<void> crateApiTagReaderWriteAudioCover({
+    required String path,
+    required List<int> bytes,
+  }) {
+    return handler.executeNormal(
+      NormalTask(
+        callFfi: (port_) {
+          final serializer = SseSerializer(generalizedFrbRustBinding);
+          sse_encode_String(path, serializer);
+          sse_encode_list_prim_u_8_loose(bytes, serializer);
+          pdeCallFfi(
+            generalizedFrbRustBinding,
+            serializer,
+            funcId: 59,
+            port: port_,
+          );
+        },
+        codec: SseCodec(
+          decodeSuccessData: sse_decode_unit,
+          decodeErrorData: sse_decode_String,
+        ),
+        constMeta: kCrateApiTagReaderWriteAudioCoverConstMeta,
+        argValues: [path, bytes],
+        apiImpl: this,
+      ),
+    );
+  }
+
+  TaskConstMeta get kCrateApiTagReaderWriteAudioCoverConstMeta =>
+      const TaskConstMeta(
+        debugName: 'write_audio_cover',
+        argNames: ['path', 'bytes'],
+      );
+
+  @override
   Future<void> crateApiTagReaderWriteAudioTags({
     required String path,
     required WriteTagPayload payload,
@@ -2327,7 +2367,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 59,
+            funcId: 60,
             port: port_,
           );
         },
@@ -2362,7 +2402,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 60,
+            funcId: 61,
             port: port_,
           );
         },
@@ -2400,7 +2440,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
             pdeCallFfi(
               generalizedFrbRustBinding,
               serializer,
-              funcId: 61,
+              funcId: 62,
               port: port_,
             );
           },

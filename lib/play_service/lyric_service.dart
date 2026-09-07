@@ -26,6 +26,93 @@ const int _kLyricCacheCapacity = 32;
 const int lyricWordPreSwitchMs = 320;
 const int lyricHighlightCatchUpDurationMs = 260;
 const int lyricHighlightFinishLeadMs = 32;
+const int lyricLineAdvanceTimerMaxMs = 1000;
+
+/// 行推进定时器最多 1 秒对齐一次；只有明显回退或超过「定时器间隔 × 倍速」才当 seek。
+bool lyricLineAdvanceIsSeekJump({
+  required double previousPositionSec,
+  required double nextPositionSec,
+  required double rate,
+}) {
+  final delta = nextPositionSec - previousPositionSec;
+  if (delta < -0.05) return true;
+  final speed = rate > 1.0 ? rate : 1.0;
+  final maxForwardSec = (lyricLineAdvanceTimerMaxMs / 1000.0) * speed + 0.35;
+  return delta > maxForwardSec;
+}
+
+/// 顺序播放每次只推进一行，避免定时器迟到时一次跳过多行把切换动画吞掉。
+int lyricSequentialAdvanceCursor({
+  required int nextLyricLine,
+  required int posMs,
+  required List<int> lineSwitchStartMs,
+}) {
+  if (nextLyricLine < lineSwitchStartMs.length &&
+      posMs >= lineSwitchStartMs[nextLyricLine]) {
+    return nextLyricLine + 1;
+  }
+  return nextLyricLine;
+}
+
+int? lyricNextAdvanceBoundaryMs({
+  required int posMs,
+  required int nextLyricLine,
+  required List<int> lineSwitchStartMs,
+}) {
+  if (nextLyricLine >= 0 &&
+      nextLyricLine < lineSwitchStartMs.length &&
+      posMs >= lineSwitchStartMs[nextLyricLine]) {
+    return posMs;
+  }
+  final nextStart = _lyricLowerBoundGreater(lineSwitchStartMs, posMs);
+  if (nextStart == -1) return null;
+  return lineSwitchStartMs[nextStart];
+}
+
+int lyricSwitchCursorAt({
+  required int timeMs,
+  required List<int> switchStartMs,
+  required List<int> lineEndMs,
+  required int hintLineIndex,
+}) {
+  final n = switchStartMs.length;
+  if (n == 0) return -1;
+  if (hintLineIndex >= 0 &&
+      hintLineIndex < n &&
+      hintLineIndex < lineEndMs.length) {
+    final nextIndex = hintLineIndex + 1;
+    if (nextIndex < n && nextIndex < lineEndMs.length) {
+      final nextStart = switchStartMs[nextIndex];
+      final nextEnd = lineEndMs[nextIndex];
+      if (timeMs >= nextStart && timeMs < nextEnd) {
+        return nextIndex + 1;
+      }
+      if (timeMs >= nextStart) {
+        return _lyricLowerBoundGreater(switchStartMs, timeMs);
+      }
+    }
+    if (timeMs >= switchStartMs[hintLineIndex] &&
+        timeMs < lineEndMs[hintLineIndex]) {
+      return hintLineIndex + 1;
+    }
+  }
+  return _lyricLowerBoundGreater(switchStartMs, timeMs);
+}
+
+int _lyricLowerBoundGreater(List<int> arr, int x) {
+  if (arr.isEmpty) return -1;
+  var lo = 0;
+  var hi = arr.length;
+  while (lo < hi) {
+    final mid = (lo + hi) >> 1;
+    if (arr[mid] > x) {
+      hi = mid;
+    } else {
+      lo = mid + 1;
+    }
+  }
+  return lo >= arr.length ? -1 : lo;
+}
 
 bool _hasDesktopLyricContent(LyricLine line) {
   final content = switch (line) {
@@ -218,10 +305,12 @@ int? lyricHighlightDeadlineMsForLine(Lyric lyric, int lineIndex) {
   return null;
 }
 
-class LyricCache {
-  final LinkedHashMap<String, Lyric> _cache = LinkedHashMap();
+typedef _CachedLocalLyric = ({Lyric lyric, bool isExternal});
 
-  Lyric? get(String path) {
+class _LyricCache {
+  final LinkedHashMap<String, _CachedLocalLyric> _cache = LinkedHashMap();
+
+  _CachedLocalLyric? get(String path) {
     final lyric = _cache[path];
     if (lyric != null) {
       _cache.remove(path);
@@ -232,7 +321,7 @@ class LyricCache {
 
   bool containsKey(String path) => _cache.containsKey(path);
 
-  void put(String path, Lyric lyric) {
+  void put(String path, _CachedLocalLyric lyric) {
     if (_cache.containsKey(path)) {
       _cache.remove(path);
     } else if (_cache.length >= _kLyricCacheCapacity) {
@@ -250,7 +339,7 @@ class LyricCache {
   }
 }
 
-final LyricCache _lyricCache = LyricCache();
+final _LyricCache _lyricCache = _LyricCache();
 
 /// 只通知 lyric 变更
 class LyricService extends ChangeNotifier {
@@ -269,7 +358,7 @@ class LyricService extends ChangeNotifier {
   bool _desktopPreludeShown = false;
   int _lyricRequestToken = 0;
   int _prefetchGeneration = 0;
-  final Map<String, Future<Lyric?>> _lyricPrefetches = {};
+  final Map<String, Future<_CachedLocalLyric?>> _lyricPrefetches = {};
   String? _activeLyricPath;
 
   final LyricWritePromptHistory _lyricWritePromptHistory =
@@ -292,8 +381,7 @@ class LyricService extends ChangeNotifier {
     if (!isPlaying || lyric == null || lyric.lines.isEmpty) {
       return;
     }
-    _advanceLyricLineAt(playService.playbackService.position);
-    _scheduleNextLineAdvance();
+    findCurrLyricLineAt(playService.playbackService.position);
   }
 
   void _scheduleNextLineAdvance() {
@@ -305,7 +393,9 @@ class LyricService extends ChangeNotifier {
     if (nextBoundaryMs == null) return;
     final speed = playService.playbackService.rate.value;
     if (speed <= 0) return;
-    final delayMs = ((nextBoundaryMs - posMs) / speed).clamp(16, 1000).toInt();
+    final delayMs = ((nextBoundaryMs - posMs) / speed)
+        .clamp(16, lyricLineAdvanceTimerMaxMs)
+        .toInt();
     _lineAdvanceTimer?.cancel();
     _lineAdvanceTimer = Timer(Duration(milliseconds: delayMs), () {
       _lineAdvanceTimer = null;
@@ -322,11 +412,15 @@ class LyricService extends ChangeNotifier {
   }
 
   int? _nextLyricBoundaryAfter(int posMs) {
-    int? candidate;
-    final nextStart = _lowerBoundGreater(_lineSwitchStartMs, posMs);
-    if (nextStart != -1) {
-      candidate = _lineSwitchStartMs[nextStart];
+    final sequential = lyricNextAdvanceBoundaryMs(
+      posMs: posMs,
+      nextLyricLine: _nextLyricLine,
+      lineSwitchStartMs: _lineSwitchStartMs,
+    );
+    if (sequential != null && sequential <= posMs) {
+      return sequential;
     }
+    int? candidate = sequential;
     if (_hasOverlappingActiveLines) {
       for (final startMs in _lineRenderStartMs) {
         final entryMs = startMs - lyricWordPreSwitchMs;
@@ -346,13 +440,17 @@ class LyricService extends ChangeNotifier {
   }
 
   void _advanceLyricLineAt(double pos) {
-    final jumped = (pos - _lastPos).abs() > 1.0;
+    final previous = _lastPos;
     _lastPos = pos;
-    final posMs = (pos * 1000).round();
-    if (jumped) {
+    if (lyricLineAdvanceIsSeekJump(
+      previousPositionSec: previous,
+      nextPositionSec: pos,
+      rate: playService.playbackService.rate.value,
+    )) {
       findCurrLyricLineAt(pos);
       return;
     }
+    final posMs = (pos * 1000).round();
     final lyric = _currLyric;
     if (lyric == null) return;
     if (_nextLyricLine >= lyric.lines.length) {
@@ -362,10 +460,11 @@ class LyricService extends ChangeNotifier {
       findCurrLyricLineAt(pos);
       return;
     }
-    while (_nextLyricLine < _lineSwitchStartMs.length &&
-        posMs >= _lineSwitchStartMs[_nextLyricLine]) {
-      _nextLyricLine += 1;
-    }
+    _nextLyricLine = lyricSequentialAdvanceCursor(
+      nextLyricLine: _nextLyricLine,
+      posMs: posMs,
+      lineSwitchStartMs: _lineSwitchStartMs,
+    );
 
     final currLineIndex = _nextLyricLine - 1;
     final activity = _lineActivityForSwitchPosition(currLineIndex, posMs);
@@ -595,6 +694,14 @@ class LyricService extends ChangeNotifier {
   /// 供 widget 使用
   Future<Lyric?> currLyricFuture = Future.value(null);
   LyricSourceType _activeLyricSourceType = LyricSourceType.local;
+  // 非在线来源细分：true=外置文件，false=内嵌标签，null=尚未确定
+  bool? _activeLocalIsExternal;
+
+  /// 当前正在使用的歌词来源（加载期间为预设值，完成后为实际命中源）
+  LyricSourceType get activeLyricSourceType => _activeLyricSourceType;
+
+  /// 非在线来源时，true=外置文件，false=内嵌标签，null=尚未确定
+  bool? get activeLocalIsExternal => _activeLocalIsExternal;
 
   /// 当前歌词是否已加载
   bool get hasLyric => _currLyric != null;
@@ -852,6 +959,7 @@ class LyricService extends ChangeNotifier {
       return;
     }
 
+    _lastPos = positionSeconds;
     final posMs = (positionSeconds * 1000).round();
     final hint = _lastEmittedLineIndexForHint;
     final next = _findLrcPos(time: posMs, lines: lyric.lines, hint: hint);
@@ -979,31 +1087,13 @@ class LyricService extends ChangeNotifier {
     required List<int> lineEndMs,
     required int hint,
   }) {
-    final n = lines.length;
-    if (n == 0) return -1;
-
-    if (hint >= 0 &&
-        hint < n &&
-        hint < lineRenderStartMs.length &&
-        hint < lineEndMs.length) {
-      final nextIndex = hint + 1;
-      if (nextIndex < n &&
-          nextIndex < lineRenderStartMs.length &&
-          nextIndex < lineEndMs.length) {
-        final segNextStart = lineRenderStartMs[nextIndex];
-        final segNextEnd = lineEndMs[nextIndex];
-        if (time >= segNextStart && time < segNextEnd) {
-          return nextIndex + 1;
-        }
-      }
-      final segStartMs = lineRenderStartMs[hint];
-      final segEndMs = lineEndMs[hint];
-      if (time >= segStartMs && time < segEndMs) {
-        return hint + 1;
-      }
-    }
-
-    return _lowerBoundGreater(lineRenderStartMs, time);
+    if (lines.isEmpty) return -1;
+    return lyricSwitchCursorAt(
+      timeMs: time,
+      switchStartMs: lineRenderStartMs,
+      lineEndMs: lineEndMs,
+      hintLineIndex: hint,
+    );
   }
 
   List<int> _computeActiveLines(int posMs) {
@@ -1106,21 +1196,6 @@ class LyricService extends ChangeNotifier {
       break;
     }
     return layout.toList()..sort();
-  }
-
-  int _lowerBoundGreater(List<int> arr, int x) {
-    if (arr.isEmpty) return -1;
-    int lo = 0;
-    int hi = arr.length;
-    while (lo < hi) {
-      final mid = (lo + hi) >> 1;
-      if (arr[mid] > x) {
-        hi = mid;
-      } else {
-        lo = mid + 1;
-      }
-    }
-    return lo >= arr.length ? -1 : lo;
   }
 
   List<int> _buildLineStarts(Lyric lyric) {
@@ -1267,26 +1342,39 @@ class LyricService extends ChangeNotifier {
   }) async {
     final cacheKey = _localLyricCacheKey(audioPath);
     final selectedPath = lyricSources[audioPath]?.localLyricPath;
-    if (selectedPath != null && !await File(selectedPath).exists()) {
-      _lyricCache.remove(cacheKey);
-      _lyricPrefetches.remove(cacheKey);
-      if (notifyFailure) {
-        showTextOnSnackBar('指定的歌词文件不存在', variant: ToastVariant.error);
+    if (selectedPath != null) {
+      _activeLocalIsExternal = true;
+      if (!await File(selectedPath).exists()) {
+        _lyricCache.remove(cacheKey);
+        _lyricPrefetches.remove(cacheKey);
+        if (notifyFailure) {
+          showTextOnSnackBar('指定的歌词文件不存在', variant: ToastVariant.error);
+        }
+        return null;
       }
-      return null;
     }
     final cached = _lyricCache.get(cacheKey);
-    if (cached != null) return cached;
-    return _lyricPrefetches[cacheKey] ??
-        _readLocalLyric(audioPath, notifyFailure: notifyFailure);
+    if (cached != null) {
+      _activeLocalIsExternal = cached.isExternal;
+      return cached.lyric;
+    }
+    final loaded =
+        await (_lyricPrefetches[cacheKey] ??
+            _readLocalLyric(audioPath, notifyFailure: notifyFailure));
+    if (loaded != null) _activeLocalIsExternal = loaded.isExternal;
+    return loaded?.lyric;
   }
 
-  Future<Lyric?> _readLocalLyric(
+  Future<_CachedLocalLyric?> _readLocalLyric(
     String audioPath, {
     required bool notifyFailure,
   }) async {
     final selectedPath = lyricSources[audioPath]?.localLyricPath;
-    if (selectedPath == null) return loadLyricFromAudio(audioPath);
+    if (selectedPath == null) {
+      final result = await loadLyricFromAudio(audioPath);
+      if (result == null) return null;
+      return (lyric: result.lyric, isExternal: result.isExternal);
+    }
     if (!await File(selectedPath).exists()) {
       if (notifyFailure) {
         showTextOnSnackBar('指定的歌词文件不存在', variant: ToastVariant.error);
@@ -1295,10 +1383,19 @@ class LyricService extends ChangeNotifier {
     }
 
     final lyric = await loadLyricFromFile(selectedPath);
-    if (lyric == null && notifyFailure) {
-      showTextOnSnackBar('指定的歌词文件读取或解析失败', variant: ToastVariant.error);
+    if (lyric == null) {
+      if (notifyFailure) {
+        showTextOnSnackBar('指定的歌词文件读取或解析失败', variant: ToastVariant.error);
+      }
+      return null;
     }
-    return lyric;
+    return (lyric: lyric, isExternal: true);
+  }
+
+  void _putLocalLyricCache(String cacheKey, Lyric lyric) {
+    final isExternal = _activeLocalIsExternal;
+    if (isExternal == null) return;
+    _lyricCache.put(cacheKey, (lyric: lyric, isExternal: isExternal));
   }
 
   static LyricSourceType _lyricSourceTypeFromResultSource(ResultSource source) {
@@ -1358,6 +1455,7 @@ class LyricService extends ChangeNotifier {
 
     final requestToken = _beginLyricRequest(audioPath);
     _activeLyricSourceType = LyricSourceType.local;
+    _activeLocalIsExternal = null;
 
     final lyricSource = lyricSources[audioPath];
     final isFromWeb =
@@ -1425,7 +1523,7 @@ class LyricService extends ChangeNotifier {
         _nextLyricLine = 0;
         _setCurrLyric(value);
         if (usesLocalLyric) {
-          _lyricCache.put(localCacheKey!, value);
+          _putLocalLyricCache(localCacheKey!, value);
         }
         // 网络歌词加载成功后，安排写入标签提示
         if (isFromWeb || value.source == LyricFormat.web) {
@@ -1574,7 +1672,7 @@ class LyricService extends ChangeNotifier {
     final generation = _prefetchGeneration;
 
     // 触发加载但不等待结果
-    late final Future<Lyric?> future;
+    late final Future<_CachedLocalLyric?> future;
     future = (() async {
       try {
         final value = await _readLocalLyric(path, notifyFailure: false);
@@ -1600,6 +1698,7 @@ class LyricService extends ChangeNotifier {
     final audioPath = nowPlaying.path;
     final requestToken = _beginLyricRequest(audioPath);
     _activeLyricSourceType = LyricSourceType.local;
+    _activeLocalIsExternal = null;
 
     final cacheKey = _localLyricCacheKey(audioPath);
     currLyricFuture = _loadLocalLyric(audioPath, notifyFailure: true);
@@ -1608,7 +1707,7 @@ class LyricService extends ChangeNotifier {
       if (!_isCurrentLyricRequest(requestToken, audioPath, future)) return;
       if (value != null) {
         _setCurrLyric(value);
-        _lyricCache.put(cacheKey, value);
+        _putLocalLyricCache(cacheKey, value);
       } else {
         _currLyric = null;
       }
@@ -1695,6 +1794,7 @@ class LyricService extends ChangeNotifier {
     final audioPath = nowPlaying.path;
     final requestToken = _beginLyricRequest(audioPath);
     _activeLyricSourceType = LyricSourceType.local;
+    _activeLocalIsExternal = true; // useSpecificLyric 由用户手动选择外置文件触发
 
     currLyricFuture = Future.value(lyric);
     final future = currLyricFuture;
