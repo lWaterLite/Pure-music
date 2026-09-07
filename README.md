@@ -1,3 +1,10 @@
+> [!IMPORTANT]
+> **独立衍生版本声明**
+>
+> 本仓库最初派生自原仓库 [qingyueyin/Pure-music](https://github.com/qingyueyin/Pure-music)，现作为独立版本继续维护，仅供个人使用，不提供任何直接发布包。
+> 原项目及其既有贡献的著作权归原作者 qingyueyin 与各原始贡献者所有；本仓库完整保留原有署名、版权声明与 GPL-3.0 许可证。
+> 本仓库不是原作者的官方发布渠道，也不代表原作者或原仓库立场；使用、分发或二次开发时，请同时尊重原项目来源并遵守 [GPL-3.0](LICENSE)。
+
 # Pure Music
 
 <p align="center">
@@ -9,15 +16,6 @@
 </p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/Platform-Windows-blue?style=flat-square" alt="Platform">
-  <img src="https://badgen.net/github/release/qingyueyin/Pure-music?icon=github" alt="Version">
-  <img src="https://img.shields.io/github/downloads/qingyueyin/Pure-music/total?style=flat-square" alt="Downloads">
-  <img src="https://img.shields.io/badge/License-GPL--3.0-green?style=flat-square" alt="License">
-  <a href="https://qingyueyin.github.io/Pure-music/"><img src="https://img.shields.io/badge/网站-Pure_Music-28a745?style=flat-square" alt="Website"></a>
-  <a href="https://gitee.com/qingyueyin/Pure-music"><img src="https://img.shields.io/badge/Gitee-镜像仓库-red?style=flat-square" alt="Gitee"></a>
-  <a href="https://t.me/+NsZamWiEKh5lOWNl"><img src="https://img.shields.io/badge/Telegram-加入群组-2AABEE?style=flat-square&logo=telegram" alt="Telegram"></a>
-  <a href="https://linux.do"><img src="https://img.shields.io/badge/LINUX_DO-%E7%A4%BE%E5%8C%BA%20%E9%93%BE%E6%8E%A5-blue?style=flat-square" alt="LINUX DO"></a>
-  <a href="https://trendshift.io/repositories/110656?utm_source=repository-badge&amp;utm_medium=badge&amp;utm_campaign=badge-repository-110656"><img src="https://trendshift.io/api/badge/repositories/110656" alt="Trendshift"></a>
 </p>
 
 一款纯粹的本地音乐播放器。
@@ -147,29 +145,17 @@ BASS、flutter_rust_bridge、dio、lofty、provider、go_router、window_manager
 
 ---
 
-## 贡献者
+## 原仓库贡献者
 
 [![contrib.rocks](https://contrib.rocks/image?repo=qingyueyin/Pure-music&max=1000&v=2)](https://github.com/qingyueyin/Pure-music/graphs/contributors)
-
 ---
-
-## Star History
-
-<a href="https://www.star-history.com/?repos=qingyueyin%2FPure-music&type=date&legend=top-left">
- <picture>
-   <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/chart?repos=qingyueyin/Pure-music&type=date&theme=dark&legend=top-left&sealed_token=3xg2arWalPfLMWP-v8tF6oiUigXHChZGv3G5byMARkfFx4mAH_bKPZWuYsOGt0OXyQAacmwE94DO-yNQKFu3d1xE7KqjHBRQ1PXDBRrIb9-lsK6IVQyzdA" />
-   <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/chart?repos=qingyueyin/Pure-music&type=date&theme=light&legend=top-left&sealed_token=3xg2arWalPfLMWP-v8tF6oiUigXHChZGv3G5byMARkfFx4mAH_bKPZWuYsOGt0OXyQAacmwE94DO-yNQKFu3d1xE7KqjHBRQ1PXDBRrIb9-lsK6IVQyzdA" />
-   <img alt="Star History Chart" src="https://api.star-history.com/chart?repos=qingyueyin/Pure-music&type=date&legend=top-left&sealed_token=3xg2arWalPfLMWP-v8tF6oiUigXHChZGv3G5byMARkfFx4mAH_bKPZWuYsOGt0OXyQAacmwE94DO-yNQKFu3d1xE7KqjHBRQ1PXDBRrIb9-lsK6IVQyzdA" />
- </picture>
-</a>
-
 ---
 
 ## License
 
 **GNU General Public License v3.0** — 法律上遵循此许可。
 
-**附加要求（非法律条款，但请尊重）：**
+**原始仓库附加要求（非法律条款，但请尊重）：**
 - 本软件**仅限非商业用途**
 - 若使用或修改本软件，**请注明出处**（附上本仓库链接）
 
@@ -186,4 +172,4 @@ Pure Music 始于 [coriander_player](https://github.com/Ferry-200/coriander_play
 
 ---
 
-<div align="center">Made with ❤️ by qingyueyin</div>
+<div align="center">Made with ❤️ by qingyueyin, edit by lWaterLite</div>
