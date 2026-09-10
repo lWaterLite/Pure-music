@@ -28,6 +28,21 @@ typedef ContentBuilder<T> =
       ContentView view,
     );
 
+typedef ContentAreaBuilder<T> =
+    Widget Function(
+      BuildContext context,
+      List<T> contentList,
+      ContentView view,
+      MultiSelectController<T>? multiSelectController,
+      ScrollController scrollController,
+    );
+
+typedef UniPageActionRowsBuilder =
+    List<List<Widget>> Function(
+      List<Widget> extraActions,
+      List<Widget> primaryActions,
+    );
+
 typedef SortMethod<T> = void Function(List<T> list, SortOrder order);
 typedef BackgroundSortMethod<T> =
     Future<List<T>?> Function(
@@ -290,6 +305,9 @@ class UniPage<T> extends StatefulWidget {
     required this.contentList,
     required this.contentBuilder,
     this.primaryAction,
+    this.extraActions = const <Widget>[],
+    this.trailingActions = const <Widget>[],
+    this.actionRowsBuilder,
     required this.enableShufflePlay,
     required this.enableSortMethod,
     required this.enableSortOrder,
@@ -302,6 +320,8 @@ class UniPage<T> extends StatefulWidget {
     this.contentRevision,
     this.contentIsPrepared = false,
     this.enableStackedEffect = true,
+    this.contentAreaBuilder,
+    this.onSortMethodChanged,
   });
 
   final PagePreference pref;
@@ -313,6 +333,9 @@ class UniPage<T> extends StatefulWidget {
   final ContentBuilder<T> contentBuilder;
 
   final Widget? primaryAction;
+  final List<Widget> extraActions;
+  final List<Widget> trailingActions;
+  final UniPageActionRowsBuilder? actionRowsBuilder;
 
   final bool enableShufflePlay;
   final bool enableSortMethod;
@@ -329,6 +352,8 @@ class UniPage<T> extends StatefulWidget {
   final SliverGridDelegate? gridDelegate;
   final Object? contentRevision;
   final bool contentIsPrepared;
+  final ContentAreaBuilder<T>? contentAreaBuilder;
+  final VoidCallback? onSortMethodChanged;
 
   /// 是否启用堆叠滚动效果（平滑滚轮始终启用）。
   final bool enableStackedEffect;
@@ -690,6 +715,7 @@ class _UniPageState<T> extends State<UniPage<T>> {
         widget.pref.sortMethod = widget.sortMethods?.indexOf(sortMethod) ?? 0;
       });
       _scheduleBackgroundSort('sortMethod');
+      widget.onSortMethodChanged?.call();
       return;
     }
     _cancelBackgroundSort();
@@ -698,6 +724,7 @@ class _UniPageState<T> extends State<UniPage<T>> {
       widget.pref.sortMethod = widget.sortMethods?.indexOf(sortMethod) ?? 0;
       _prepareContent('sortMethod');
     });
+    widget.onSortMethodChanged?.call();
   }
 
   void setSortOrder(SortOrder sortOrder) {
@@ -732,15 +759,15 @@ class _UniPageState<T> extends State<UniPage<T>> {
   Widget build(BuildContext context) {
     final buildStopwatch = Stopwatch()..start();
     try {
-      final List<Widget> actions = [];
+      final List<Widget> primaryActions = [];
       if (widget.primaryAction != null) {
-        actions.add(widget.primaryAction!);
+        primaryActions.add(widget.primaryAction!);
       }
       if (widget.enableShufflePlay) {
-        actions.add(ShufflePlay<T>(contentList: widget.contentList));
+        primaryActions.add(ShufflePlay<T>(contentList: widget.contentList));
       }
       if (widget.enableSortMethod) {
-        actions.add(
+        primaryActions.add(
           SortMethodComboBox<T>(
             sortMethods: widget.sortMethods!,
             contentList: widget.contentList,
@@ -750,7 +777,7 @@ class _UniPageState<T> extends State<UniPage<T>> {
         );
       }
       if (widget.enableSortOrder) {
-        actions.add(
+        primaryActions.add(
           SortOrderSwitch<T>(
             sortOrder: currSortOrder,
             setSortOrder: setSortOrder,
@@ -758,20 +785,33 @@ class _UniPageState<T> extends State<UniPage<T>> {
         );
       }
       if (widget.enableContentViewSwitch) {
-        actions.add(
+        primaryActions.add(
           ContentViewSwitch<T>(
             contentView: currContentView,
             setContentView: setContentView,
           ),
         );
       }
+      primaryActions.addAll(widget.trailingActions);
+      final actions = <Widget>[
+        if (widget.primaryAction != null) widget.primaryAction!,
+        ...widget.extraActions,
+        ...primaryActions.skip(widget.primaryAction == null ? 0 : 1),
+      ];
+      final actionRows = widget.actionRowsBuilder?.call(
+        widget.extraActions,
+        primaryActions,
+      );
 
       return widget.multiSelectController == null
-          ? result(null, actions)
+          ? result(null, actions, actionRows: actionRows)
           : ListenableBuilder(
               listenable: widget.multiSelectController!,
-              builder: (context, _) =>
-                  result(widget.multiSelectController!, actions),
+              builder: (context, _) => result(
+                widget.multiSelectController!,
+                actions,
+                actionRows: actionRows,
+              ),
             );
     } finally {
       buildStopwatch.stop();
@@ -782,6 +822,19 @@ class _UniPageState<T> extends State<UniPage<T>> {
   Widget _buildContentArea(MultiSelectController<T>? multiSelectController) {
     final stopwatch = Stopwatch()..start();
     try {
+      final contentAreaBuilder = widget.contentAreaBuilder;
+      if (contentAreaBuilder != null) {
+        return MultiSelectPointerRegion<T>(
+          controller: multiSelectController,
+          child: contentAreaBuilder(
+            context,
+            widget.contentList,
+            currContentView,
+            multiSelectController,
+            scrollController,
+          ),
+        );
+      }
       if (widget.contentList.isEmpty) {
         return _UniPageEmptyState(title: widget.title);
       }
@@ -890,8 +943,9 @@ class _UniPageState<T> extends State<UniPage<T>> {
 
   Widget result(
     MultiSelectController<T>? multiSelectController,
-    List<Widget> actions,
-  ) {
+    List<Widget> actions, {
+    List<List<Widget>>? actionRows,
+  }) {
     final scheme = Theme.of(context).colorScheme;
 
     return PageScaffold(
@@ -902,6 +956,9 @@ class _UniPageState<T> extends State<UniPage<T>> {
           : multiSelectController.enableMultiSelectView
           ? widget.multiSelectViewActions!
           : actions,
+      actionRows: multiSelectController?.enableMultiSelectView == true
+          ? null
+          : actionRows,
       body: ListenableBuilder(
         listenable: AppSettings.listMotionNotifier,
         builder: (context, _) => Material(
