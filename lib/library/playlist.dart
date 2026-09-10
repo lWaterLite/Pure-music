@@ -13,6 +13,9 @@ import 'package:sqlite3/sqlite3.dart';
 import 'package:path/path.dart' as p;
 
 final List<Playlist> playlists = [];
+final List<PlaylistGroup> playlistGroups = [];
+
+const ungroupedPlaylistGroupName = '未分组';
 
 String _playlistPathKey(String value) {
   var normalized = value.trim().replaceAll('\\', '/');
@@ -66,6 +69,7 @@ Future<void> readPlaylists() async {
       playlists
         ..clear()
         ..addAll(fromJson);
+      playlistGroups.clear();
       logger.i(
         '[perf] playlists load=${stopwatch.elapsedMilliseconds}ms '
         'count=${playlists.length} migrated=true',
@@ -77,6 +81,9 @@ Future<void> readPlaylists() async {
     playlists
       ..clear()
       ..addAll(fromDatabase);
+    playlistGroups
+      ..clear()
+      ..addAll(readPlaylistGroupsFromDatabase(db));
     logger.i(
       '[perf] playlists load=${stopwatch.elapsedMilliseconds}ms '
       'count=${playlists.length} migrated=false',
@@ -89,7 +96,8 @@ Future<void> readPlaylists() async {
 
 List<Playlist> readPlaylistsFromDatabase(Database db) {
   final playlistRows = db.select(
-    'SELECT id, name, cover_source FROM playlists ORDER BY name',
+    'SELECT id, name, cover_source, group_id, sort_order FROM playlists '
+    'ORDER BY name',
   );
   if (playlistRows.isEmpty) return <Playlist>[];
 
@@ -117,8 +125,25 @@ List<Playlist> readPlaylistsFromDatabase(Database db) {
     return Playlist(row['name'] as String, pathsByPlaylistId[id] ?? const [])
       ..id = id
       ..coverSource = row['cover_source'] as String?
+      ..groupId = row['group_id'] as int?
+      ..sortOrder = row['sort_order'] as int? ?? 0
       .._addedAt.addAll(addedAtByPlaylistId[id] ?? const {});
   }).toList();
+}
+
+List<PlaylistGroup> readPlaylistGroupsFromDatabase(Database db) {
+  return db
+      .select(
+        'SELECT id, name, sort_order FROM playlist_groups ORDER BY sort_order, id',
+      )
+      .map(
+        (row) => PlaylistGroup(
+          row['name'] as String,
+          id: row['id'] as int,
+          sortOrder: row['sort_order'] as int? ?? 0,
+        ),
+      )
+      .toList();
 }
 
 Future<bool> savePlaylists() async {
@@ -132,6 +157,24 @@ Future<bool> savePlaylists() async {
   }
 }
 
+int nextPlaylistSortOrder(int? groupId) {
+  var next = 0;
+  for (final playlist in playlists) {
+    if (playlist.groupId == groupId && playlist.sortOrder >= next) {
+      next = playlist.sortOrder + 1;
+    }
+  }
+  return next;
+}
+
+int nextPlaylistGroupSortOrder() {
+  var next = 0;
+  for (final group in playlistGroups) {
+    if (group.sortOrder >= next) next = group.sortOrder + 1;
+  }
+  return next;
+}
+
 final class PlaylistAlreadyExistsException implements Exception {
   const PlaylistAlreadyExistsException();
 }
@@ -142,11 +185,13 @@ bool _isTransientPlaylistWriteError(SqliteException error) {
 }
 
 Playlist createPlaylistInDatabase(Database db, String name) {
-  final playlist = Playlist(name.trim(), const []);
+  final playlist = Playlist(name.trim(), const [])
+    ..sortOrder = nextPlaylistSortOrder(null);
   try {
     final inserted = db.select(
-      'INSERT INTO playlists(name, cover_source) VALUES(?, NULL) RETURNING id',
-      [playlist.name],
+      'INSERT INTO playlists(name, cover_source, group_id, sort_order) '
+      'VALUES(?, NULL, NULL, ?) RETURNING id',
+      [playlist.name, playlist.sortOrder],
     );
     playlist.id = inserted.single['id'] as int;
     return playlist;
@@ -156,6 +201,46 @@ Playlist createPlaylistInDatabase(Database db, String name) {
     }
     rethrow;
   }
+}
+
+final class PlaylistGroupAlreadyExistsException implements Exception {
+  const PlaylistGroupAlreadyExistsException();
+}
+
+PlaylistGroup createPlaylistGroupInDatabase(Database db, String name) {
+  final group = PlaylistGroup(
+    name.trim(),
+    sortOrder: nextPlaylistGroupSortOrder(),
+  );
+  try {
+    final inserted = db.select(
+      'INSERT INTO playlist_groups(name, sort_order) VALUES(?, ?) RETURNING id',
+      [group.name, group.sortOrder],
+    );
+    group.id = inserted.single['id'] as int;
+    return group;
+  } on SqliteException catch (err) {
+    if (err.resultCode == SqlError.SQLITE_CONSTRAINT) {
+      throw const PlaylistGroupAlreadyExistsException();
+    }
+    rethrow;
+  }
+}
+
+Future<PlaylistGroup> createPlaylistGroup(String name) async {
+  for (var attempt = 0; attempt < 2; attempt++) {
+    final db = await AppDb.instance.db();
+    try {
+      return createPlaylistGroupInDatabase(db, name);
+    } on SqliteException catch (err) {
+      if (attempt == 0 && _isTransientPlaylistWriteError(err)) {
+        await Future<void>.delayed(const Duration(milliseconds: 100));
+        continue;
+      }
+      rethrow;
+    }
+  }
+  throw StateError('Playlist group creation retry exhausted');
 }
 
 Future<Playlist> createPlaylist(String name) async {
@@ -190,6 +275,41 @@ List<Playlist> _readPlaylistsFromJson(File jsonFile) {
 void _writePlaylistsToDb(Database db, List<Playlist> playlists) {
   db.execute('BEGIN');
   try {
+    final existingGroups = db.select('SELECT id, name FROM playlist_groups');
+    final existingGroupIds = <int>{};
+    final existingGroupIdsByName = <String, int>{};
+    for (final row in existingGroups) {
+      final id = row['id'] as int;
+      existingGroupIds.add(id);
+      existingGroupIdsByName[row['name'] as String] = id;
+    }
+    final keptGroupIds = <int>{};
+    for (final group in playlistGroups) {
+      final groupId = group.id;
+      if (groupId != null && existingGroupIds.contains(groupId)) {
+        db.execute(
+          'UPDATE playlist_groups SET name = ?, sort_order = ? WHERE id = ?',
+          [group.name, group.sortOrder, groupId],
+        );
+        keptGroupIds.add(groupId);
+      } else if (existingGroupIdsByName.containsKey(group.name)) {
+        final existingId = existingGroupIdsByName[group.name]!;
+        group.id = existingId;
+        db.execute('UPDATE playlist_groups SET sort_order = ? WHERE id = ?', [
+          group.sortOrder,
+          existingId,
+        ]);
+        keptGroupIds.add(existingId);
+      } else {
+        db.execute(
+          'INSERT INTO playlist_groups(name, sort_order) VALUES(?, ?)',
+          [group.name, group.sortOrder],
+        );
+        group.id = db.lastInsertRowId;
+        keptGroupIds.add(group.id!);
+      }
+    }
+
     final existing = db.select('SELECT id, name FROM playlists');
     final existingByName = <String, int>{};
     final existingIds = <int>{};
@@ -202,23 +322,36 @@ void _writePlaylistsToDb(Database db, List<Playlist> playlists) {
 
     final keptIds = <int>{};
     for (final pl in playlists) {
-      final existingId = existingByName[pl.name];
+      final existingId = pl.id != null && existingIds.contains(pl.id)
+          ? pl.id
+          : existingByName[pl.name];
       int playlistId;
       if (existingId != null) {
         playlistId = existingId;
         keptIds.add(playlistId);
-        db.execute('UPDATE playlists SET cover_source = ? WHERE id = ?', [
-          pl.coverSource,
-          playlistId,
-        ]);
+        db.execute(
+          'UPDATE playlists SET name = ?, cover_source = ?, group_id = ?, sort_order = ? WHERE id = ?',
+          [
+            pl.name,
+            pl.coverSource,
+            keptGroupIds.contains(pl.groupId) ? pl.groupId : null,
+            pl.sortOrder,
+            playlistId,
+          ],
+        );
         db.execute('DELETE FROM playlist_items WHERE playlist_id = ?', [
           playlistId,
         ]);
       } else {
-        db.execute('INSERT INTO playlists(name, cover_source) VALUES(?, ?)', [
-          pl.name,
-          pl.coverSource,
-        ]);
+        db.execute(
+          'INSERT INTO playlists(name, cover_source, group_id, sort_order) VALUES(?, ?, ?, ?)',
+          [
+            pl.name,
+            pl.coverSource,
+            keptGroupIds.contains(pl.groupId) ? pl.groupId : null,
+            pl.sortOrder,
+          ],
+        );
         playlistId = db.lastInsertRowId;
         keptIds.add(playlistId);
       }
@@ -237,6 +370,13 @@ void _writePlaylistsToDb(Database db, List<Playlist> playlists) {
     for (final id in existingIds.difference(keptIds)) {
       db.execute('DELETE FROM playlist_items WHERE playlist_id = ?', [id]);
       db.execute('DELETE FROM playlists WHERE id = ?', [id]);
+    }
+
+    for (final id in existingGroupIds.difference(keptGroupIds)) {
+      db.execute('UPDATE playlists SET group_id = NULL WHERE group_id = ?', [
+        id,
+      ]);
+      db.execute('DELETE FROM playlist_groups WHERE id = ?', [id]);
     }
 
     db.execute('COMMIT');
@@ -328,6 +468,8 @@ class Playlist {
   String name;
   List<String> paths;
   String? coverSource;
+  int? groupId;
+  int sortOrder = 0;
   Set<String>? _pathKeys;
   final Map<String, DateTime> _addedAt = {};
   List<Audio>? _audiosCache;
@@ -510,4 +652,12 @@ class Playlist {
     }
     return Playlist(map['name'] ?? '', paths);
   }
+}
+
+class PlaylistGroup {
+  int? id;
+  String name;
+  int sortOrder;
+
+  PlaylistGroup(this.name, {this.id, this.sortOrder = 0});
 }

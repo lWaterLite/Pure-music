@@ -257,6 +257,15 @@ int _normalizedNonNegativeInt(Object? value) {
   return number < 0 ? 0 : number;
 }
 
+Set<int> _normalizedNonNegativeIntSet(Object? value) {
+  if (value is! Iterable) return <int>{};
+  return value
+      .map(_normalizedInteger)
+      .whereType<int>()
+      .where((item) => item >= 0)
+      .toSet();
+}
+
 int _normalizedBoundedInt(
   Object? value, {
   required int defaultValue,
@@ -668,6 +677,16 @@ class AppPreference {
     ContentView.list,
   );
 
+  var playlistGroupsPagePref = PagePreference(
+    0,
+    SortOrder.ascending,
+    ContentView.list,
+  );
+
+  Set<int> collapsedPlaylistGroupIds = <int>{};
+  bool playlistUngroupedCollapsed = false;
+  int playlistUngroupedSortOrder = 0;
+
   var playlistDetailPagePref = PagePreference(
     0,
     SortOrder.ascending,
@@ -747,6 +766,19 @@ class AppPreference {
       prefMap['folderDetailPagePref'],
     );
     playlistsPagePref = PagePreference.fromMap(prefMap['playlistsPagePref']);
+    playlistGroupsPagePref = PagePreference.fromMap(
+      prefMap['playlistGroupsPagePref'],
+    );
+    collapsedPlaylistGroupIds = _normalizedNonNegativeIntSet(
+      prefMap['collapsedPlaylistGroupIds'],
+    );
+    playlistUngroupedCollapsed = _normalizedBool(
+      prefMap['playlistUngroupedCollapsed'],
+      defaultValue: false,
+    );
+    playlistUngroupedSortOrder = _normalizedNonNegativeInt(
+      prefMap['playlistUngroupedSortOrder'],
+    );
     playlistDetailPagePref = PagePreference.fromMap(
       prefMap['playlistDetailPagePref'],
     );
@@ -834,6 +866,10 @@ class AppPreference {
         'foldersPagePref': foldersPagePref.toMap(),
         'folderDetailPagePref': folderDetailPagePref.toMap(),
         'playlistsPagePref': playlistsPagePref.toMap(),
+        'playlistGroupsPagePref': playlistGroupsPagePref.toMap(),
+        'collapsedPlaylistGroupIds': collapsedPlaylistGroupIds.toList()..sort(),
+        'playlistUngroupedCollapsed': playlistUngroupedCollapsed,
+        'playlistUngroupedSortOrder': playlistUngroupedSortOrder,
         'playlistDetailPagePref': playlistDetailPagePref.toMap(),
         'startPage': startPage,
         'sidebarExpanded': sidebarExpanded,
