@@ -47,6 +47,23 @@ Future<PlatformInt64> getPlayCount({
   path: path,
 );
 
+Future<List<PlayCountEntry>> exportPlayCounts({required String indexPath}) =>
+    RustLib.instance.api.crateApiLibraryDbExportPlayCounts(
+      indexPath: indexPath,
+    );
+
+/// 按路径或唯一的标题、艺术家、专辑组合写回播放次数；不新建曲库行。
+/// `overwrite` 为 false 时取本机与传入值的较大值，为 true 时直接使用传入值。
+Future<int> importPlayCounts({
+  required String indexPath,
+  required List<PlayCountEntry> entries,
+  required bool overwrite,
+}) => RustLib.instance.api.crateApiLibraryDbImportPlayCounts(
+  indexPath: indexPath,
+  entries: entries,
+  overwrite: overwrite,
+);
+
 Future<void> migrateIndexJsonToSqlite({required String indexPath}) => RustLib
     .instance
     .api

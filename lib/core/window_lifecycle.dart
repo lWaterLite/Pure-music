@@ -7,6 +7,7 @@ import 'package:pure_music/core/paths.dart' as app_paths;
 import 'package:pure_music/core/preference.dart';
 import 'package:pure_music/core/settings.dart';
 import 'package:pure_music/core/utils.dart';
+import 'package:pure_music/library/audio_library.dart';
 import 'package:pure_music/library/playlist.dart';
 import 'package:pure_music/lyric/lyric_source.dart';
 import 'package:pure_music/native/bass/bass_player.dart';
@@ -302,18 +303,27 @@ class WindowLifecycleService with WindowListener, TrayListener {
     PlayService.existingPlaybackService?.stopSmtcKeepAlive();
   }
 
-  Future<void> exitApp() async {
+  /// [skipSave] 用于备份导入后重启：内存中仍是旧状态，写回会覆盖刚导入的文件。
+  Future<void> exitApp({bool skipSave = false}) async {
     if (_isExiting) return;
     _isExiting = true;
 
-    await _run('saveSettings', AppSettings.instance.saveSettings());
+    if (!skipSave) {
+      await _run('saveSettings', AppSettings.instance.saveSettings());
+    }
     await _run('windowManager.hide', windowManager.hide());
     await _run('HotkeysHelper.unregisterAll', HotkeysHelper.unregisterAll());
-    if (_libraryReady) {
+    if (_libraryReady && !skipSave) {
       await _run('savePlaylists', savePlaylists());
       await _run('saveLyricSources', saveLyricSources());
+      await _run(
+        'waitForPageOrderCache',
+        AudioLibrary.instance.waitForPreferredPageOrderCacheWrite(),
+      );
     }
-    await _run('savePreference', AppPreference.instance.save());
+    if (!skipSave) {
+      await _run('savePreference', AppPreference.instance.save());
+    }
     if (PlayService.isInitialized) {
       await _run(
         'PlayService.close',
