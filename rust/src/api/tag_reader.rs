@@ -2324,8 +2324,8 @@ pub fn write_audio_cover(path: String, bytes: Vec<u8>) -> Result<(), String> {
     tag.remove_picture_type(PictureType::CoverFront);
 
     if !bytes.is_empty() {
-        let img = image::load_from_memory(&bytes)
-            .map_err(|e| format!("Error decoding image: {e}"))?;
+        let img =
+            image::load_from_memory(&bytes).map_err(|e| format!("Error decoding image: {e}"))?;
 
         const MAX_SIDE: u32 = 1600;
         let img = if img.width() > MAX_SIDE || img.height() > MAX_SIDE {
@@ -2337,12 +2337,7 @@ pub fn write_audio_cover(path: String, bytes: Vec<u8>) -> Result<(), String> {
         // 按原始格式编码，无法识别时降级 JPEG
         let (encoded, mime) = detect_and_encode(&img, &bytes)?;
 
-        let picture = Picture::new_unchecked(
-            PictureType::CoverFront,
-            Some(mime),
-            None,
-            encoded,
-        );
+        let picture = Picture::new_unchecked(PictureType::CoverFront, Some(mime), None, encoded);
         tag.push_picture(picture);
     }
 
@@ -2354,15 +2349,14 @@ pub fn write_audio_cover(path: String, bytes: Vec<u8>) -> Result<(), String> {
 
 /// 根据原始字节的 magic bytes 检测图片格式，按原格式编码返回。
 /// 支持 PNG、JPEG、GIF；无法识别时降级为 JPEG。
-fn detect_and_encode(
-    img: &DynamicImage,
-    raw_bytes: &[u8],
-) -> Result<(Vec<u8>, MimeType), String> {
+fn detect_and_encode(img: &DynamicImage, raw_bytes: &[u8]) -> Result<(Vec<u8>, MimeType), String> {
     let format = if raw_bytes.len() >= 8 && raw_bytes[..8] == *b"\x89PNG\r\n\x1a\n" {
         Some(image::ImageFormat::Png)
     } else if raw_bytes.len() >= 3 && raw_bytes[..3] == *b"\xFF\xD8\xFF" {
         Some(image::ImageFormat::Jpeg)
-    } else if raw_bytes.len() >= 6 && raw_bytes[..6] == *b"GIF87a" || raw_bytes.len() >= 6 && raw_bytes[..6] == *b"GIF89a" {
+    } else if raw_bytes.len() >= 6 && raw_bytes[..6] == *b"GIF87a"
+        || raw_bytes.len() >= 6 && raw_bytes[..6] == *b"GIF89a"
+    {
         Some(image::ImageFormat::Gif)
     } else {
         None
