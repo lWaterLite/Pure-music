@@ -1,9 +1,58 @@
+import 'dart:math' as math;
+
 final _eqPresetNameWhitespacePattern = RegExp(r'\s+');
 const int eqBandCount = 10;
+const int legacyEqBandModelVersion = 1;
+const int currentEqBandModelVersion = 2;
 const double eqGainMinDb = -15.0;
 const double eqGainMaxDb = 15.0;
 const double eqPreampMinDb = -24.0;
 const double eqPreampMaxDb = 24.0;
+const double eqAutoGainMinDb = -48.0;
+const double eqBandBandwidthOctaves = 1.0;
+const double eqBandQ = 1.414;
+const double eqOutputVolumeMax = 8.0;
+const double eqDx8CenterMinHz = 80.0;
+const double eqDx8CenterMaxHz = 16000.0;
+
+const List<double> eqBandFrequenciesHz = [
+  31.0,
+  62.0,
+  125.0,
+  250.0,
+  500.0,
+  1000.0,
+  2000.0,
+  4000.0,
+  8000.0,
+  16000.0,
+];
+
+const List<String> eqBandLabels = [
+  '31',
+  '62',
+  '125',
+  '250',
+  '500',
+  '1k',
+  '2k',
+  '4k',
+  '8k',
+  '16k',
+];
+
+const List<double> _legacyEqBandFrequenciesHz = [
+  80.0,
+  100.0,
+  125.0,
+  250.0,
+  500.0,
+  1000.0,
+  2000.0,
+  4000.0,
+  8000.0,
+  16000.0,
+];
 
 String normalizedEqPresetName(String value) {
   return value.trim().replaceAll(_eqPresetNameWhitespacePattern, ' ');
@@ -26,10 +75,7 @@ String? findEquivalentEqPresetName({
   return null;
 }
 
-bool canSubmitEqPresetName({
-  required String input,
-  required bool isSaving,
-}) {
+bool canSubmitEqPresetName({required String input, required bool isSaving}) {
   if (isSaving) return false;
   return normalizedEqPresetName(input).isNotEmpty;
 }
@@ -60,6 +106,219 @@ List<double> normalizedEqGains(Object? value) {
     result.add(0.0);
   }
   return result;
+}
+
+List<double> migrateEqGains(Object? value, {required int fromVersion}) {
+  final gains = normalizedEqGains(value);
+  if (fromVersion >= currentEqBandModelVersion) return gains;
+
+  return [
+    for (final frequency in eqBandFrequenciesHz)
+      _interpolateLogFrequencyGain(
+        frequency,
+        _legacyEqBandFrequenciesHz,
+        gains,
+      ),
+  ];
+}
+
+double eqBandwidthFromQ(double q) {
+  final normalizedQ = q.clamp(0.1, 10.0).toDouble();
+  final x = 1.0 / (2.0 * normalizedQ);
+  return (2.0 * math.log(x + math.sqrt(x * x + 1.0)) / math.ln2)
+      .clamp(0.1, 10.0)
+      .toDouble();
+}
+
+double eqQFromBandwidthOctaves(double bandwidthOctaves) {
+  final normalizedBandwidth = bandwidthOctaves.isFinite
+      ? bandwidthOctaves.clamp(0.1, 10.0).toDouble()
+      : 1.0;
+  final x = normalizedBandwidth * math.ln2 / 2.0;
+  return 1.0 / (math.exp(x) - math.exp(-x));
+}
+
+double eqDx8BandwidthSemitonesFromQ(double q) {
+  return (eqBandwidthFromQ(q) * 12.0).clamp(1.0, 36.0).toDouble();
+}
+
+double eqDx8CenterHz(double frequency) {
+  return frequency.clamp(eqDx8CenterMinHz, eqDx8CenterMaxHz).toDouble();
+}
+
+double eqDx8CenterForSampleRate(double frequency, double sampleRate) {
+  final normalizedSampleRate = sampleRate.isFinite && sampleRate > 0.0
+      ? sampleRate
+      : 48000.0;
+  final maximumCenter = math.min(eqDx8CenterMaxHz, normalizedSampleRate / 3.0);
+  if (maximumCenter < eqDx8CenterMinHz) return eqDx8CenterMinHz;
+  return frequency.clamp(eqDx8CenterMinHz, maximumCenter).toDouble();
+}
+
+double eqBandCenterForSampleRate(double frequency, double sampleRate) {
+  final normalizedSampleRate = sampleRate.isFinite && sampleRate > 0.0
+      ? sampleRate
+      : 48000.0;
+  final maximumCenter = (normalizedSampleRate * 0.5 * 0.9)
+      .clamp(20.0, eqDx8CenterMaxHz)
+      .toDouble();
+  return frequency.clamp(20.0, maximumCenter).toDouble();
+}
+
+double eqDbToLinear(double db) {
+  if (db.isNaN) return 1.0;
+  if (db == double.infinity) return double.infinity;
+  if (db == double.negativeInfinity) return 0.0;
+  return math.pow(10.0, db.clamp(-96.0, 96.0) / 20.0).toDouble();
+}
+
+double eqOutputVolume({required double volumeDsp, required double totalDb}) {
+  final normalizedVolume = volumeDsp.isFinite
+      ? volumeDsp.clamp(0.0, eqOutputVolumeMax).toDouble()
+      : 0.0;
+  if (normalizedVolume == 0.0) return 0.0;
+  if (totalDb.isNaN) return normalizedVolume;
+  return (normalizedVolume * eqDbToLinear(totalDb))
+      .clamp(0.0, eqOutputVolumeMax)
+      .toDouble();
+}
+
+double computeEqAutoGainDb({
+  required bool eqEnabled,
+  required Iterable<double> gains,
+  required double preampDb,
+  required double autoHeadroomDb,
+  double sampleRate = 48000.0,
+  bool useDx8Fallback = false,
+}) {
+  if (!eqEnabled) return 0.0;
+  final normalizedGains = normalizedEqGains(gains.toList(growable: false));
+  final peakGainDb = estimateEqPeakGainDb(
+    normalizedGains,
+    sampleRate: sampleRate,
+    useDx8Fallback: useDx8Fallback,
+  );
+  final requiredHeadroomDb = math.max(
+    0.0,
+    peakGainDb +
+        normalizedEqPreampDb(preampDb) +
+        autoHeadroomDb.clamp(0.0, 24.0).toDouble(),
+  );
+  return (-requiredHeadroomDb).clamp(eqAutoGainMinDb, 0.0).toDouble();
+}
+
+double estimateEqPeakGainDb(
+  Iterable<double> gains, {
+  double sampleRate = 48000.0,
+  bool useDx8Fallback = false,
+}) {
+  final normalizedGains = normalizedEqGains(gains.toList(growable: false));
+  var peakDb = 0.0;
+  final normalizedSampleRate = sampleRate.isFinite && sampleRate > 0.0
+      ? sampleRate
+      : 48000.0;
+  final maximumFrequency = math.min(20000.0, normalizedSampleRate * 0.5 * 0.98);
+  if (maximumFrequency <= 20.0) return 0.0;
+  for (var i = 0; i < 512; i++) {
+    final ratio = i / 511.0;
+    final frequency =
+        20.0 * math.pow(maximumFrequency / 20.0, ratio).toDouble();
+    peakDb = math.max(
+      peakDb,
+      _eqResponseDb(
+        frequency,
+        normalizedGains,
+        sampleRate: normalizedSampleRate,
+        useDx8Fallback: useDx8Fallback,
+      ),
+    );
+  }
+  for (var i = 0; i < eqBandCount; i++) {
+    peakDb = math.max(
+      peakDb,
+      _eqResponseDb(
+        eqBandFrequenciesHz[i],
+        normalizedGains,
+        sampleRate: normalizedSampleRate,
+        useDx8Fallback: useDx8Fallback,
+      ),
+    );
+  }
+  return peakDb;
+}
+
+double _interpolateLogFrequencyGain(
+  double targetFrequency,
+  List<double> frequencies,
+  List<double> gains,
+) {
+  if (targetFrequency <= frequencies.first) return gains.first;
+  if (targetFrequency >= frequencies.last) return gains.last;
+  for (var i = 0; i < frequencies.length - 1; i++) {
+    final low = frequencies[i];
+    final high = frequencies[i + 1];
+    if (targetFrequency < low || targetFrequency > high) continue;
+    final position =
+        (math.log(targetFrequency) - math.log(low)) /
+        (math.log(high) - math.log(low));
+    return (gains[i] + (gains[i + 1] - gains[i]) * position)
+        .clamp(eqGainMinDb, eqGainMaxDb)
+        .toDouble();
+  }
+  return 0.0;
+}
+
+double _eqResponseDb(
+  double frequency,
+  List<double> gains, {
+  required double sampleRate,
+  required bool useDx8Fallback,
+}) {
+  final nyquist = sampleRate * 0.5;
+  if (frequency <= 0.0 || frequency >= nyquist * 0.98) return 0.0;
+  final omega = 2.0 * math.pi * frequency / sampleRate;
+  final bandwidthOctaves = useDx8Fallback
+      ? eqDx8BandwidthSemitonesFromQ(eqBandQ) / 12.0
+      : eqBandBandwidthOctaves;
+  final q = eqQFromBandwidthOctaves(bandwidthOctaves);
+  var totalDb = 0.0;
+  for (var i = 0; i < eqBandCount; i++) {
+    final gain = gains[i];
+    if (gain.abs() < 1e-6) continue;
+    final center = useDx8Fallback
+        ? eqDx8CenterForSampleRate(eqBandFrequenciesHz[i], sampleRate)
+        : eqBandCenterForSampleRate(eqBandFrequenciesHz[i], sampleRate);
+    final w0 = 2.0 * math.pi * center / sampleRate;
+    final alpha = math.sin(w0) / (2.0 * q);
+    final cosine = math.cos(w0);
+    final amplitude = math.pow(10.0, gain / 40.0).toDouble();
+    final b0 = 1.0 + alpha * amplitude;
+    final b1 = -2.0 * cosine;
+    final b2 = 1.0 - alpha * amplitude;
+    final a0 = 1.0 + alpha / amplitude;
+    final a1 = -2.0 * cosine;
+    final a2 = 1.0 - alpha / amplitude;
+    final cosOmega = math.cos(omega);
+    final sinOmega = math.sin(omega);
+    final cosDoubleOmega = math.cos(2.0 * omega);
+    final sinDoubleOmega = math.sin(2.0 * omega);
+    final numeratorReal = b0 + b1 * cosOmega + b2 * cosDoubleOmega;
+    final numeratorImag = -b1 * sinOmega - b2 * sinDoubleOmega;
+    final denominatorReal = a0 + a1 * cosOmega + a2 * cosDoubleOmega;
+    final denominatorImag = -a1 * sinOmega - a2 * sinDoubleOmega;
+    final denominatorMagnitude = math.sqrt(
+      denominatorReal * denominatorReal + denominatorImag * denominatorImag,
+    );
+    final numeratorMagnitude = math.sqrt(
+      numeratorReal * numeratorReal + numeratorImag * numeratorImag,
+    );
+    if (denominatorMagnitude <= 1e-9 || numeratorMagnitude <= 1e-9) {
+      continue;
+    }
+    totalDb +=
+        20.0 * math.log(numeratorMagnitude / denominatorMagnitude) / math.ln10;
+  }
+  return totalDb;
 }
 
 double normalizedEqPreampDb(Object? value) {

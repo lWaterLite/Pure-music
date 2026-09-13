@@ -72,6 +72,8 @@ const int BASS_ATTRIB_VOL = 2;
 
 const int BASS_ATTRIB_VOLDSP = 19;
 
+const int BASS_ATTRIB_VOLDSP_PRIORITY = 20;
+
 const int BASS_DEVICE_REINIT = 128;
 
 const int BASS_ERROR_DEVICE = 23;
@@ -130,8 +132,14 @@ const int BASS_FX_DX8_PARAMEQ = 3;
 
 const int BASS_FX_BFX_ROTATE = 0x10000;
 const int BASS_FX_BFX_PEAKEQ = BASS_FX_BFX_ROTATE + 4;
+const int BASS_FX_BFX_REVERB = BASS_FX_BFX_ROTATE + 5;
+const int BASS_FX_BFX_DISTORTION = BASS_FX_BFX_ROTATE + 16;
+const int BASS_FX_BFX_COMPRESSOR2 = BASS_FX_BFX_ROTATE + 17;
+const int BASS_FX_BFX_BQF = BASS_FX_BFX_ROTATE + 19;
 
 const int BASS_BFX_CHANALL = -1;
+const int BASS_BFX_BQF_LOWPASS = 0;
+const int BASS_BFX_BQF_HIGHPASS = 1;
 
 final class BASS_DX8_PARAMEQ extends ffi.Struct {
   @ffi.Float()
@@ -159,6 +167,83 @@ final class BASS_BFX_PEAKEQ extends ffi.Struct {
 
   @ffi.Float()
   external double fGain;
+
+  @ffi.Int32()
+  external int lChannel;
+}
+
+final class BASS_BFX_BQF extends ffi.Struct {
+  @ffi.Int32()
+  external int lFilter;
+
+  @ffi.Float()
+  external double fCenter;
+
+  @ffi.Float()
+  external double fGain;
+
+  @ffi.Float()
+  external double fBandwidth;
+
+  @ffi.Float()
+  external double fQ;
+
+  @ffi.Float()
+  external double fS;
+
+  @ffi.Int32()
+  external int lChannel;
+}
+
+final class BASS_BFX_DISTORTION extends ffi.Struct {
+  @ffi.Float()
+  external double fDrive;
+
+  @ffi.Float()
+  external double fDryMix;
+
+  @ffi.Float()
+  external double fWetMix;
+
+  @ffi.Float()
+  external double fFeedback;
+
+  @ffi.Float()
+  external double fVolume;
+
+  @ffi.Int32()
+  external int lChannel;
+}
+
+final class BASS_BFX_REVERB extends ffi.Struct {
+  @ffi.Float()
+  external double fInGain;
+
+  @ffi.Float()
+  external double fReverbMix;
+
+  @ffi.Float()
+  external double fReverbTime;
+
+  @ffi.Float()
+  external double fHighFreqRTRatio;
+}
+
+final class BASS_BFX_COMPRESSOR2 extends ffi.Struct {
+  @ffi.Float()
+  external double fGain;
+
+  @ffi.Float()
+  external double fThreshold;
+
+  @ffi.Float()
+  external double fRatio;
+
+  @ffi.Float()
+  external double fAttack;
+
+  @ffi.Float()
+  external double fRelease;
 
   @ffi.Int32()
   external int lChannel;

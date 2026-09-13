@@ -8,6 +8,7 @@ import 'package:pure_music/library/audio_library.dart';
 import 'package:pure_music/play_service/play_service.dart';
 import 'package:pure_music/play_service/audio_echo_log_recorder.dart';
 import 'package:pure_music/play_service/equalizer_service.dart';
+import 'package:pure_music/core/audio_dsp_settings.dart';
 import 'package:pure_music/play_service/smart_transition_coordinator.dart';
 import 'package:pure_music/play_service/smtc_bridge.dart';
 import 'package:pure_music/native/bass/bass_player.dart';
@@ -188,6 +189,8 @@ class PlaybackService extends ChangeNotifier {
   List<EqPreset> get eqPresets => _eq.eqPresets;
   double get eqPreampDb => _eq.eqPreampDb;
   bool get eqAutoGainEnabled => _eq.eqAutoGainEnabled;
+  bool get eqEnabled => _eq.eqEnabled;
+  AudioDspSettings get audioEffects => _eq.audioEffects;
   double get eqAutoHeadroomDb => _eq.eqAutoHeadroomDb;
   double get eqAutoGainDb => _eq.eqAutoGainDb;
 
@@ -196,6 +199,18 @@ class PlaybackService extends ChangeNotifier {
   void setEQ(int band, double gain) {
     _synchronizeGaplessTransition();
     _eq.setEQ(band, gain);
+    _rebuildGaplessPreparation();
+  }
+
+  void setEqEnabled(bool enabled) {
+    _synchronizeGaplessTransition();
+    _eq.setEqEnabled(enabled);
+    _rebuildGaplessPreparation();
+  }
+
+  void setAudioEffects(AudioDspSettings settings) {
+    _synchronizeGaplessTransition();
+    _eq.setAudioEffects(settings);
     _rebuildGaplessPreparation();
   }
 
@@ -208,6 +223,12 @@ class PlaybackService extends ChangeNotifier {
   void setEqAutoGainEnabled(bool enabled) {
     _synchronizeGaplessTransition();
     _eq.setEqAutoGainEnabled(enabled);
+    _rebuildGaplessPreparation();
+  }
+
+  void setEqAutoHeadroomDb(double value) {
+    _synchronizeGaplessTransition();
+    _eq.setEqAutoHeadroomDb(value);
     _rebuildGaplessPreparation();
   }
 
@@ -230,10 +251,32 @@ class PlaybackService extends ChangeNotifier {
   }
 
   Future<bool> saveEqPreset(String name) => _eq.saveEqPreset(name);
+  Future<bool> saveEqPresetBatch(Iterable<EqPreset> presets) =>
+      _eq.saveEqPresetBatch(presets);
+  Future<bool> importEqPresetsAndApplyLast(Iterable<EqPreset> presets) async {
+    _synchronizeGaplessTransition();
+    final applied = await _eq.importEqPresetsAndApplyLast(presets);
+    _rebuildGaplessPreparation();
+    return applied;
+  }
+
   Future<bool> removeEqPreset(String name) => _eq.removeEqPreset(name);
   Future<bool> applyEqPreset(EqPreset preset) async {
     _synchronizeGaplessTransition();
     final applied = await _eq.applyEqPreset(preset);
+    _rebuildGaplessPreparation();
+    return applied;
+  }
+
+  void applyEqGainsSnapshot(List<double> gains, {double? preampDb}) {
+    _synchronizeGaplessTransition();
+    _eq.applyEqGainsSnapshot(gains, preampDb: preampDb);
+    _rebuildGaplessPreparation();
+  }
+
+  Future<bool> applyBuiltInAudioPreset(BuiltInAudioPreset preset) async {
+    _synchronizeGaplessTransition();
+    final applied = await _eq.applyBuiltInAudioPreset(preset);
     _rebuildGaplessPreparation();
     return applied;
   }
@@ -287,16 +330,62 @@ class PlaybackService extends ChangeNotifier {
   ValueNotifier<bool> get wasapiExclusive => _wasapiExclusive;
 
   /// 独占模式
-  void useExclusiveMode(bool exclusive) {
+  bool useExclusiveMode(bool exclusive) {
     logger.i('[action] useExclusiveMode=$exclusive');
     AudioEchoLogRecorder.instance.mark(
       'useExclusiveMode',
       extra: {'exclusive': exclusive},
     );
     _synchronizeGaplessTransition();
-    if (_player.useExclusiveMode(exclusive)) {
-      _wasapiExclusive.value = exclusive;
+    final disabled = <String>[];
+    final previousEqEnabled = _eq.eqEnabled;
+    final previousAudioEffects = _eq.audioEffects;
+    final previousRate = _rate.value;
+    final previousPitch = _pitch.value;
+    if (exclusive && !_player.wasapiExclusive) {
+      if (_player.hasAudioSource) {
+        disabled.addAll(_eq.disableForExclusiveMode());
+        if ((_rate.value - 1.0).abs() > 1e-6) {
+          _rate.value = 1.0;
+          _player.setRate(1.0);
+          disabled.add('变速');
+        }
+        if (_pitch.value.abs() > 1e-6) {
+          _pitch.value = 0.0;
+          _player.setPitch(0.0);
+          disabled.add('变调');
+        }
+      }
     }
+    final applied = _player.useExclusiveMode(exclusive);
+    if (!applied && disabled.isNotEmpty) {
+      if (disabled.contains('EQ')) {
+        _eq.setEqEnabled(previousEqEnabled);
+      }
+      if (disabled.contains('DSP')) {
+        _eq.setAudioEffects(previousAudioEffects);
+      }
+      if (disabled.contains('变速')) {
+        _rate.value = previousRate;
+        _player.setRate(previousRate);
+      }
+      if (disabled.contains('变调')) {
+        _pitch.value = previousPitch;
+        _player.setPitch(previousPitch);
+      }
+    }
+    if (applied) {
+      _wasapiExclusive.value = exclusive;
+      if (disabled.isNotEmpty) {
+        unawaited(AppPreference.instance.save());
+      }
+      final modeLabel = exclusive ? '独占' : '共享';
+      final message = disabled.isEmpty
+          ? '已切换到$modeLabel'
+          : '已切换到$modeLabel，已关闭${disabled.join('、')}';
+      showTextOnSnackBar(message, variant: ToastVariant.success);
+    }
+    return applied;
   }
 
   late final _nowPlaying = ValueNotifier<Audio?>(null);

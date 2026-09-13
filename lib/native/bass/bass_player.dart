@@ -7,6 +7,8 @@ import 'dart:math' as math;
 import 'dart:typed_data';
 import 'package:pure_music/core/enums.dart';
 import 'package:pure_music/core/preference.dart';
+import 'package:pure_music/core/audio_dsp_settings.dart';
+import 'package:pure_music/core/equalizer_action_state.dart';
 import 'package:pure_music/native/bass/bass.dart' as bass;
 import 'package:pure_music/native/bass/bass_fx.dart';
 import 'package:pure_music/native/bass/bass_mix.dart';
@@ -76,6 +78,15 @@ final class SmartTransitionPreparation {
 }
 
 class BassPlayer {
+  static const _eqFxPriority = 1000;
+  static const _highPassFxPriority = 900;
+  static const _lowPassFxPriority = 890;
+  static const _driveFxPriority = 800;
+  static const _reverbFxPriority = 700;
+  static const _punchFxPriority = 600;
+  static const _dspVolumePriority = 100;
+  static const _limiterFxPriority = 10;
+
   late final ffi.DynamicLibrary _bassLib;
   late final ffi.DynamicLibrary _bassWasapiLib;
   late final bass.Bass _bass;
@@ -115,6 +126,8 @@ class BassPlayer {
 
   double? _replayGainDb;
   double _baseOutputVolume = 1.0;
+  Timer? _outputGainFadeTimer;
+  double? _outputGainFadeTarget;
 
   double? get replayGainDb => _replayGainDb;
 
@@ -127,39 +140,75 @@ class BassPlayer {
   final List<int> _eqHandles = [];
   int _bfxEqHandle = 0;
   final List<double> _eqGains = List.filled(10, 0.0);
+  final List<double> _appliedEqGains = List.filled(10, 0.0);
+  final List<Timer?> _eqSmoothingTimers = List<Timer?>.filled(10, null);
+  Timer? _eqRemovalTimer;
+  bool _eqEnabled = true;
+  double _eqPreampDb = 0.0;
+  AudioDspSettings _audioEffects = const AudioDspSettings();
+  final Map<int, int> _dspFxHandles = <int, int>{};
+  int? _dspChannel;
   List<double> get eqGains => List.unmodifiable(_eqGains);
-  static const _eqCenters = [
-    80.0,
-    100.0,
-    125.0,
-    250.0,
-    500.0,
-    1000.0,
-    2000.0,
-    4000.0,
-    8000.0,
-    16000.0,
-  ];
-
-  double _calculateBandwidth(double centerFreq) {
-    const minFreq = 80.0;
-    const maxFreq = 16000.0;
-    const minBandwidth = 8.0;
-    const maxBandwidth = 28.0;
-
-    final clampedFreq = centerFreq.clamp(minFreq, maxFreq);
-    final factor = (clampedFreq - minFreq) / (maxFreq - minFreq);
-    final bandwidth = maxBandwidth + (minBandwidth - maxBandwidth) * factor;
-
-    return bandwidth.clamp(1.0, 36.0);
-  }
-
   double _rate = 1.0;
   double _pitch = 0.0;
 
   double get rate => _rate;
 
-  bool get _isEqFlat => _eqGains.every((g) => g.abs() < 1e-6);
+  bool get _isEqFlat => !_eqEnabled || _eqGains.every((g) => g.abs() < 1e-6);
+
+  bool get _isDspNeutral => _audioEffects.isNeutral;
+
+  bool get _hasEqFx =>
+      _bfxEqHandle != 0 || _eqHandles.any((handle) => handle != 0);
+
+  bool get isEqNeutral =>
+      _isEqFlat && (!_eqEnabled || _eqPreampDb.abs() < 1e-6);
+
+  bool get isDspNeutral => _isDspNeutral;
+
+  String get _dspStateLine {
+    if (!_audioEffects.enabled && !_audioEffects.limiterEnabled) return 'off';
+    final parts = <String>[];
+    if (_audioEffects.enabled && _audioEffects.highPassHz > 20.0) {
+      parts.add('hp=${_audioEffects.highPassHz.round()}');
+    }
+    if (_audioEffects.enabled && _audioEffects.lowPassHz < 20000.0) {
+      parts.add('lp=${_audioEffects.lowPassHz.round()}');
+    }
+    if (_audioEffects.enabled && _audioEffects.drive > 0.0001) {
+      parts.add('drive=${(_audioEffects.drive * 100).round()}%');
+    }
+    if (_audioEffects.enabled && _audioEffects.reverb > 0.0001) {
+      parts.add('reverb=${(_audioEffects.reverb * 100).round()}%');
+    }
+    if (_audioEffects.enabled && _audioEffects.punch > 0.0001) {
+      parts.add('dyn=${(_audioEffects.punch * 100).round()}%');
+    }
+    if (_audioEffects.limiterEnabled) {
+      parts.add('limit=${_audioEffects.limiterCeilingDb.toStringAsFixed(1)}');
+    }
+    return parts.isEmpty ? 'on' : parts.join(',');
+  }
+
+  List<String> get exclusiveModeConflicts {
+    final conflicts = <String>[];
+    if (_fstream == null || _fPath == null) {
+      conflicts.add('当前没有可用的音频流');
+    }
+    if (!isEqNeutral) {
+      conflicts.add('均衡器或前级增益不是中性');
+    }
+    if (!_isDspNeutral) {
+      conflicts.add('DSP 音效链不是中性');
+    }
+    if ((_rate - 1.0).abs() > 1e-6) {
+      conflicts.add('播放速度不是 1.0x');
+    }
+    if (_pitch.abs() > 1e-6) {
+      conflicts.add('音调不是 0 半音');
+    }
+    return List.unmodifiable(conflicts);
+  }
 
   /// 是否启用 wasapi 独占模式
   bool wasapiExclusive = false;
@@ -238,8 +287,10 @@ class BassPlayer {
       '[bass] $tag | exclusive=$wasapiExclusive streamExclusive=$_streamWasapiExclusive '
       'wasapiStarted=$wasapiStarted handle=$_fstream mixer=$_mixerStream queued=$_queuedStream '
       'smart=${_smartPreparation?.transitionId ?? _activeSmartTransitionId} '
-      'eq=$eqCount eqFlat=${_isEqFlat ? 1 : 0} '
-      'rate=$_rate pitch=$_pitch wasapi=$_wasapiOutputInfo',
+      'eq=$eqCount eqFlat=${isEqNeutral ? 1 : 0} '
+      'dsp=$_dspStateLine volume=${_baseOutputVolume.toStringAsFixed(3)} '
+      'rate=$_rate pitch=$_pitch sampleRate=${_streamSampleRate.round()}Hz '
+      'wasapi=$_wasapiOutputInfo',
     );
   }
 
@@ -250,8 +301,10 @@ class BassPlayer {
     return 'exclusive=$wasapiExclusive streamExclusive=$_streamWasapiExclusive '
         'wasapiStarted=$wasapiStarted handle=$_fstream mixer=$_mixerStream queued=$_queuedStream '
         'smart=${_smartPreparation?.transitionId ?? _activeSmartTransitionId} '
-        'eq=$eqCount eqFlat=${_isEqFlat ? 1 : 0} '
-        'rate=$_rate pitch=$_pitch wasapi=$_wasapiOutputInfo';
+        'eq=$eqCount eqFlat=${isEqNeutral ? 1 : 0} '
+        'dsp=$_dspStateLine volume=${_baseOutputVolume.toStringAsFixed(3)} '
+        'rate=$_rate pitch=$_pitch sampleRate=${_streamSampleRate.round()}Hz '
+        'wasapi=$_wasapiOutputInfo';
   }
 
   /// audio's length in seconds
@@ -367,6 +420,8 @@ class BassPlayer {
   ffi.Pointer<ffi.Float>? _wasapiFftBuffer;
   double? _cachedLengthSeconds;
   double _streamSampleRate = 44100.0;
+  double get streamSampleRate => _streamSampleRate;
+  bool get hasAudioSource => _fstream != null && _fPath != null;
   int _lastSpectrumUpdateUs = 0;
   final Stopwatch _spectrumClock = Stopwatch()..start();
   Duration _spectrumTickPeriod = const Duration(milliseconds: 16);
@@ -692,12 +747,16 @@ class BassPlayer {
 
   void setEQ(int band, double gain) {
     if (band < 0 || band >= 10) return;
+    _eqRemovalTimer?.cancel();
+    _eqRemovalTimer = null;
     final wasFlat = _isEqFlat;
-    _eqGains[band] = gain;
+    _eqGains[band] = gain.isFinite
+        ? gain.clamp(eqGainMinDb, eqGainMaxDb).toDouble()
+        : 0.0;
     if (_fstream == null) return;
 
     if (wasapiExclusive) {
-      if (!_isEqFlat) {
+      if (!isEqNeutral) {
         logger.w('[bass] EQ enabled in exclusive mode, keep shared mode');
         useExclusiveMode(false);
       }
@@ -706,16 +765,129 @@ class BassPlayer {
 
     if (_isEqFlat) {
       if (!wasFlat) {
-        _removeEQ();
+        _fadeOutEQ();
       }
       return;
     }
 
-    if (_eqHandles.isEmpty && _bfxEqHandle == 0) {
+    if (!_hasEqFx) {
       _initEQ();
     }
 
-    _updateEQ(band);
+    _smoothEQBand(band, targetGain: _eqEnabled ? _eqGains[band] : 0.0);
+  }
+
+  void applyEqGains(Iterable<double> gains, {bool smooth = true}) {
+    _eqRemovalTimer?.cancel();
+    _eqRemovalTimer = null;
+    final wasFlat = _isEqFlat;
+    final values = gains.toList(growable: false);
+    for (var i = 0; i < eqBandCount; i++) {
+      final value = i < values.length ? values[i] : 0.0;
+      _eqGains[i] = value.isFinite
+          ? value.clamp(eqGainMinDb, eqGainMaxDb).toDouble()
+          : 0.0;
+    }
+    if (_fstream == null) return;
+
+    if (wasapiExclusive) {
+      if (!isEqNeutral) useExclusiveMode(false);
+      return;
+    }
+    if (_isEqFlat) {
+      if (!wasFlat) {
+        _fadeOutEQ();
+      } else {
+        _removeEQ();
+      }
+      return;
+    }
+    if (!_hasEqFx) _initEQ();
+    for (var i = 0; i < eqBandCount; i++) {
+      final target = _eqEnabled ? _eqGains[i] : 0.0;
+      if (smooth) {
+        _smoothEQBand(i, targetGain: target);
+      } else {
+        _eqSmoothingTimers[i]?.cancel();
+        _eqSmoothingTimers[i] = null;
+        _appliedEqGains[i] = target;
+        _updateEQ(i);
+      }
+    }
+  }
+
+  void setEqPreampDb(double value) {
+    _eqPreampDb = value.isFinite
+        ? value.clamp(eqPreampMinDb, eqPreampMaxDb).toDouble()
+        : 0.0;
+    if (wasapiExclusive && !isEqNeutral) {
+      useExclusiveMode(false);
+    }
+  }
+
+  void setEqEnabled(bool enabled) {
+    if (_eqEnabled == enabled) return;
+    final wasFlat = _isEqFlat;
+    _eqEnabled = enabled;
+    if (_fstream == null) return;
+    if (enabled && wasapiExclusive && !isEqNeutral) {
+      useExclusiveMode(false);
+      return;
+    }
+    if (!enabled && !wasFlat && !wasapiExclusive) {
+      _fadeOutEQ();
+      return;
+    }
+    refreshEQ();
+  }
+
+  void setAudioEffects(AudioDspSettings settings) {
+    _audioEffects = settings.normalized();
+    if (_fstream == null) return;
+    if (!_isDspNeutral && wasapiExclusive) {
+      useExclusiveMode(false);
+      return;
+    }
+    refreshAudioEffects();
+  }
+
+  void _smoothEQBand(int band, {double? targetGain}) {
+    _eqSmoothingTimers[band]?.cancel();
+    final start = _appliedEqGains[band];
+    final target = targetGain ?? _eqGains[band];
+    if ((start - target).abs() < 0.01) {
+      _appliedEqGains[band] = target;
+      _updateEQ(band);
+      return;
+    }
+    const steps = 6;
+    var step = 0;
+    _eqSmoothingTimers[band] = Timer.periodic(
+      const Duration(milliseconds: 10),
+      (timer) {
+        step++;
+        _appliedEqGains[band] = start + (target - start) * step / steps;
+        _updateEQ(band);
+        if (step >= steps) {
+          timer.cancel();
+          _eqSmoothingTimers[band] = null;
+        }
+      },
+    );
+  }
+
+  void _fadeOutEQ() {
+    if (_eqChannel == null && !_hasEqFx) {
+      return;
+    }
+    for (var i = 0; i < eqBandCount; i++) {
+      _smoothEQBand(i, targetGain: 0.0);
+    }
+    _eqRemovalTimer?.cancel();
+    _eqRemovalTimer = Timer(const Duration(milliseconds: 70), () {
+      _eqRemovalTimer = null;
+      if (_isEqFlat) _removeEQ();
+    });
   }
 
   void refreshEQ() {
@@ -724,10 +896,12 @@ class BassPlayer {
       _removeEQ();
       return;
     }
-    if (_eqHandles.isEmpty && _bfxEqHandle == 0) {
+    _cancelEqSmoothing();
+    if (!_hasEqFx) {
       _initEQ();
     } else {
       for (int i = 0; i < 10; i++) {
+        _appliedEqGains[i] = _eqGains[i];
         _updateEQ(i);
       }
     }
@@ -742,17 +916,17 @@ class BassPlayer {
       _bfxEqHandle = _bass.BASS_ChannelSetFX(
         channel,
         bass.BASS_FX_BFX_PEAKEQ,
-        0,
+        _eqFxPriority,
       );
       if (_bfxEqHandle != 0) {
         for (int i = 0; i < 10; i++) {
+          _appliedEqGains[i] = _eqGains[i];
           _updateEQ(i);
         }
         return;
       }
       logger.w('Failed to set BFX EQ: BASS Error ${_bass.BASS_ErrorGetCode()}');
       _bfxEqHandle = 0;
-      return;
     }
 
     _eqHandles
@@ -764,7 +938,7 @@ class BassPlayer {
         final fx = _bass.BASS_ChannelSetFX(
           channel,
           bass.BASS_FX_DX8_PARAMEQ,
-          0,
+          _eqFxPriority,
         );
 
         if (fx == 0) {
@@ -785,24 +959,22 @@ class BassPlayer {
     if (band < 0 || band >= 10) return;
 
     if (_bfxEqHandle != 0) {
+      final params = calloc<bass.BASS_BFX_PEAKEQ>();
       try {
-        final params = calloc<bass.BASS_BFX_PEAKEQ>();
-        final center = _eqCenters[band];
-        final bandwidth = (_calculateBandwidth(center) / 12.0).clamp(0.1, 10.0);
-        final gain = _eqGains[band];
+        final center = eqBandCenterForSampleRate(
+          eqBandFrequenciesHz[band],
+          _streamSampleRate,
+        );
+        final gain = _appliedEqGains[band];
 
         params.ref.lBand = band;
         params.ref.fCenter = center;
-        params.ref.fBandwidth = bandwidth;
+        params.ref.fBandwidth = eqBandBandwidthOctaves;
         params.ref.fQ = 0.0;
         params.ref.fGain = gain;
         params.ref.lChannel = bass.BASS_BFX_CHANALL;
 
         final result = _bass.BASS_FXSetParameters(_bfxEqHandle, params.cast());
-
-        logger.i(
-          'EQ Update (BFX) - Band: $band, Freq: $center Hz, Gain: $gain dB, Bandwidth: $bandwidth, Result: $result',
-        );
 
         if (result == 0) {
           final err = _bass.BASS_ErrorGetCode();
@@ -810,10 +982,10 @@ class BassPlayer {
             'Failed to set BFX EQ parameters for band $band: Error $err',
           );
         }
-
-        calloc.free(params);
       } catch (e) {
         logger.e('Error updating BFX EQ band $band: $e');
+      } finally {
+        calloc.free(params);
       }
       return;
     }
@@ -823,11 +995,14 @@ class BassPlayer {
     final fx = _eqHandles[band];
     if (fx == 0) return;
 
+    final params = calloc<bass.BASS_DX8_PARAMEQ>();
     try {
-      final params = calloc<bass.BASS_DX8_PARAMEQ>();
-      final center = _eqCenters[band];
-      final bandwidth = _calculateBandwidth(center);
-      final gain = _eqGains[band];
+      final center = eqDx8CenterForSampleRate(
+        eqBandFrequenciesHz[band],
+        _streamSampleRate,
+      );
+      final bandwidth = eqDx8BandwidthSemitonesFromQ(eqBandQ);
+      final gain = _appliedEqGains[band];
 
       params.ref.fCenter = center;
       params.ref.fBandwidth = bandwidth;
@@ -835,21 +1010,28 @@ class BassPlayer {
 
       final result = _bass.BASS_FXSetParameters(fx, params.cast());
 
-      logger.i(
-        'EQ Update (DX8) - Band: $band, Freq: $center Hz, Gain: $gain dB, Bandwidth: $bandwidth, Result: $result',
-      );
-
       if (result == 0) {
         final err = _bass.BASS_ErrorGetCode();
         logger.w('Failed to set EQ parameters for band $band: Error $err');
       }
-      calloc.free(params);
     } catch (e) {
       logger.e('Error updating EQ band $band: $e');
+    } finally {
+      calloc.free(params);
+    }
+  }
+
+  void _cancelEqSmoothing() {
+    _eqRemovalTimer?.cancel();
+    _eqRemovalTimer = null;
+    for (var i = 0; i < _eqSmoothingTimers.length; i++) {
+      _eqSmoothingTimers[i]?.cancel();
+      _eqSmoothingTimers[i] = null;
     }
   }
 
   void _removeEQ() {
+    _cancelEqSmoothing();
     final channel = _eqChannel;
     if (channel == null) {
       _bfxEqHandle = 0;
@@ -868,9 +1050,295 @@ class BassPlayer {
     _eqChannel = null;
   }
 
+  void refreshAudioEffects() {
+    _refreshStreamSampleRate();
+    final channel = _effectHandle;
+    if (channel == null ||
+        _isDspNeutral ||
+        _bassFx == null ||
+        wasapiExclusive) {
+      _removeAudioEffects();
+      return;
+    }
+    if (_dspChannel != channel) {
+      _removeAudioEffects();
+      _dspChannel = channel;
+    } else {
+      _dspChannel ??= channel;
+    }
+
+    final desiredPriorities = <int>{};
+    if (_audioEffects.enabled) {
+      final nyquist = math.max(20.0, _streamSampleRate * 0.5);
+      final maxHighPassHz = math.min(dspHighPassMaxHz, nyquist * 0.8);
+      final maxLowPassHz = math.min(dspLowPassMaxHz, nyquist * 0.95);
+      final highPassHz = maxHighPassHz >= dspHighPassMinHz
+          ? _audioEffects.highPassHz
+                .clamp(dspHighPassMinHz, maxHighPassHz)
+                .toDouble()
+          : null;
+      final lowPassHz = maxLowPassHz >= dspLowPassMinHz
+          ? _audioEffects.lowPassHz
+                .clamp(dspLowPassMinHz, maxLowPassHz)
+                .toDouble()
+          : null;
+      if (_audioEffects.highPassHz > dspHighPassMinHz &&
+          highPassHz != null &&
+          lowPassHz != null &&
+          highPassHz < lowPassHz) {
+        desiredPriorities.add(_highPassFxPriority);
+        _attachBiquad(
+          channel,
+          bass.BASS_BFX_BQF_HIGHPASS,
+          highPassHz,
+          priority: _highPassFxPriority,
+        );
+      }
+      if (_audioEffects.lowPassHz < dspLowPassMaxHz &&
+          lowPassHz != null &&
+          (highPassHz == null || lowPassHz > highPassHz)) {
+        desiredPriorities.add(_lowPassFxPriority);
+        _attachBiquad(
+          channel,
+          bass.BASS_BFX_BQF_LOWPASS,
+          lowPassHz,
+          priority: _lowPassFxPriority,
+        );
+      }
+      if (_audioEffects.drive > 0.0001) {
+        desiredPriorities.add(_driveFxPriority);
+        _attachDrive(channel);
+      }
+      if (_audioEffects.reverb > 0.0001) {
+        desiredPriorities.add(_reverbFxPriority);
+        _attachReverb(channel);
+      }
+      if (_audioEffects.punch > 0.0001) {
+        desiredPriorities.add(_punchFxPriority);
+        _attachCompressor(channel);
+      }
+    }
+    if (_audioEffects.limiterEnabled) {
+      desiredPriorities.add(_limiterFxPriority);
+      _attachLimiter(channel);
+    }
+
+    final obsoletePriorities = _dspFxHandles.keys
+        .where((priority) => !desiredPriorities.contains(priority))
+        .toList(growable: false);
+    for (final priority in obsoletePriorities) {
+      _removeDspEffect(channel, priority);
+    }
+    if (_dspFxHandles.isEmpty) _dspChannel = null;
+  }
+
+  int? _ensureDspEffect(int channel, int type, int priority) {
+    final existing = _dspFxHandles[priority];
+    if (existing != null && existing != 0) return existing;
+    final handle = _bass.BASS_ChannelSetFX(channel, type, priority);
+    if (handle == 0) {
+      logger.w(
+        '[bass] failed to create DSP effect: type=$type '
+        'priority=$priority error=${_bass.BASS_ErrorGetCode()}',
+      );
+      return null;
+    }
+    _dspFxHandles[priority] = handle;
+    return handle;
+  }
+
+  void _removeDspEffect(int channel, int priority) {
+    final handle = _dspFxHandles.remove(priority);
+    if (handle == null || handle == 0) return;
+    _bass.BASS_ChannelRemoveFX(channel, handle);
+  }
+
+  void _discardDspEffect(int channel, int priority, int handle) {
+    if (_dspFxHandles[priority] == handle) {
+      _dspFxHandles.remove(priority);
+    }
+    _bass.BASS_ChannelRemoveFX(channel, handle);
+  }
+
+  void _attachBiquad(
+    int channel,
+    int type,
+    double center, {
+    required int priority,
+  }) {
+    final handle = _ensureDspEffect(channel, bass.BASS_FX_BFX_BQF, priority);
+    if (handle == null) return;
+    final params = calloc<bass.BASS_BFX_BQF>();
+    try {
+      params.ref
+        ..lFilter = type
+        ..fCenter = center
+        ..fGain = 0
+        ..fBandwidth = 0
+        ..fQ = 0.707
+        ..fS = 1
+        ..lChannel = bass.BASS_BFX_CHANALL;
+      if (_bass.BASS_FXSetParameters(handle, params.cast()) == bass.FALSE) {
+        logger.w(
+          '[bass] failed to configure DSP filter: type=$type error=${_bass.BASS_ErrorGetCode()}',
+        );
+        _discardDspEffect(channel, priority, handle);
+      }
+    } catch (error, trace) {
+      logger.w(
+        '[bass] failed to configure DSP filter: type=$type',
+        error: error,
+        stackTrace: trace,
+      );
+      _discardDspEffect(channel, priority, handle);
+    } finally {
+      calloc.free(params);
+    }
+  }
+
+  void _attachDrive(int channel) {
+    const priority = _driveFxPriority;
+    final amount = _audioEffects.drive;
+    final wetMix = amount * 0.45;
+    final handle = _ensureDspEffect(
+      channel,
+      bass.BASS_FX_BFX_DISTORTION,
+      priority,
+    );
+    if (handle == null) return;
+    final params = calloc<bass.BASS_BFX_DISTORTION>();
+    try {
+      params.ref
+        ..fDrive = amount.clamp(0.0, 1.0).toDouble()
+        ..fDryMix = 1.0 - wetMix
+        ..fWetMix = wetMix
+        ..fFeedback = 0
+        ..fVolume = 1 / (1 + amount * 0.2)
+        ..lChannel = bass.BASS_BFX_CHANALL;
+      if (_bass.BASS_FXSetParameters(handle, params.cast()) == bass.FALSE) {
+        _discardDspEffect(channel, priority, handle);
+      }
+    } catch (error, trace) {
+      logger.w(
+        '[bass] failed to configure distortion',
+        error: error,
+        stackTrace: trace,
+      );
+      _discardDspEffect(channel, priority, handle);
+    } finally {
+      calloc.free(params);
+    }
+  }
+
+  void _attachReverb(int channel) {
+    const priority = _reverbFxPriority;
+    final amount = _audioEffects.reverb;
+    final handle = _ensureDspEffect(channel, bass.BASS_FX_BFX_REVERB, priority);
+    if (handle == null) return;
+    final params = calloc<bass.BASS_BFX_REVERB>();
+    final mix = math.sqrt(amount) * 38.0;
+    try {
+      params.ref
+        ..fInGain = 0
+        ..fReverbMix = -48 + mix
+        ..fReverbTime = 220 + amount * 1280
+        ..fHighFreqRTRatio = 0.25 + amount * 0.35;
+      if (_bass.BASS_FXSetParameters(handle, params.cast()) == bass.FALSE) {
+        _discardDspEffect(channel, priority, handle);
+      }
+    } catch (error, trace) {
+      logger.w(
+        '[bass] failed to configure reverb',
+        error: error,
+        stackTrace: trace,
+      );
+      _discardDspEffect(channel, priority, handle);
+    } finally {
+      calloc.free(params);
+    }
+  }
+
+  void _attachCompressor(int channel) {
+    const priority = _punchFxPriority;
+    final amount = _audioEffects.punch;
+    final handle = _ensureDspEffect(
+      channel,
+      bass.BASS_FX_BFX_COMPRESSOR2,
+      priority,
+    );
+    if (handle == null) return;
+    final params = calloc<bass.BASS_BFX_COMPRESSOR2>();
+    try {
+      params.ref
+        ..fGain = amount * 3.0
+        ..fThreshold = -12 - amount * 6
+        ..fRatio = 1.5 + amount * 4.5
+        ..fAttack = 20.0 - amount * 15.0
+        ..fRelease = 260 - amount * 110
+        ..lChannel = bass.BASS_BFX_CHANALL;
+      if (_bass.BASS_FXSetParameters(handle, params.cast()) == bass.FALSE) {
+        _discardDspEffect(channel, priority, handle);
+      }
+    } catch (error, trace) {
+      logger.w(
+        '[bass] failed to configure compressor',
+        error: error,
+        stackTrace: trace,
+      );
+      _discardDspEffect(channel, priority, handle);
+    } finally {
+      calloc.free(params);
+    }
+  }
+
+  void _attachLimiter(int channel) {
+    const priority = _limiterFxPriority;
+    final handle = _ensureDspEffect(
+      channel,
+      bass.BASS_FX_BFX_COMPRESSOR2,
+      priority,
+    );
+    if (handle == null) return;
+    final params = calloc<bass.BASS_BFX_COMPRESSOR2>();
+    try {
+      params.ref
+        ..fGain = 0
+        ..fThreshold = _audioEffects.limiterCeilingDb
+        ..fRatio = 100.0
+        ..fAttack = 0.1
+        ..fRelease = 100.0
+        ..lChannel = bass.BASS_BFX_CHANALL;
+      if (_bass.BASS_FXSetParameters(handle, params.cast()) == bass.FALSE) {
+        _discardDspEffect(channel, priority, handle);
+      }
+    } catch (error, trace) {
+      logger.w(
+        '[bass] failed to configure limiter',
+        error: error,
+        stackTrace: trace,
+      );
+      _discardDspEffect(channel, priority, handle);
+    } finally {
+      calloc.free(params);
+    }
+  }
+
+  void _removeAudioEffects() {
+    final channel = _dspChannel;
+    if (channel != null) {
+      for (final handle in _dspFxHandles.values) {
+        _bass.BASS_ChannelRemoveFX(channel, handle);
+      }
+    }
+    _dspFxHandles.clear();
+    _dspChannel = null;
+  }
+
   void _resetBassHandles() {
+    _cancelOutputGainFade(keepTarget: true);
     _fadeInTimer?.cancel();
     _fadeInTimer = null;
+    _cancelEqSmoothing();
     _fadeOutTimer?.cancel();
     _fadeOutTimer = null;
     _fadeOutHandle = null;
@@ -906,6 +1374,8 @@ class BassPlayer {
     _eqChannel = null;
     _bfxEqHandle = 0;
     _eqHandles.clear();
+    _dspFxHandles.clear();
+    _dspChannel = null;
   }
 
   void _bassInit({bool resetHandles = true}) {
@@ -1225,6 +1695,17 @@ class BassPlayer {
     return _dbToLinear(gainDb ?? 0.0).clamp(0.0, 8.0).toDouble();
   }
 
+  void _setDspVolumePriority(int channel) {
+    final result = _bass.BASS_ChannelSetAttribute(
+      channel,
+      bass.BASS_ATTRIB_VOLDSP_PRIORITY,
+      _dspVolumePriority.toDouble(),
+    );
+    if (result == bass.FALSE) {
+      logger.w('[bass] failed to set DSP volume priority');
+    }
+  }
+
   void _applySourceGain(int stream, double? gainDb) {
     _bass.BASS_ChannelSetAttribute(
       stream,
@@ -1360,6 +1841,7 @@ class BassPlayer {
     }
     final direct = _createDirectSharedStream(audioPath);
     if (direct != 0) {
+      _setDspVolumePriority(direct);
       _bass.BASS_ChannelSetAttribute(direct, bass.BASS_ATTRIB_VOL, 0.0);
     }
     return direct;
@@ -1441,6 +1923,7 @@ class BassPlayer {
 
       _mixerStream = output;
       _mixerUsesQueue = seamless;
+      _setDspVolumePriority(output);
       _bass.BASS_ChannelSetAttribute(
         output,
         bass.BASS_ATTRIB_VOLDSP,
@@ -1653,6 +2136,10 @@ class BassPlayer {
     _activeGaplessTransitionId = null;
     _fstream = null;
     _eqChannel = null;
+    _bfxEqHandle = 0;
+    _eqHandles.clear();
+    _dspChannel = null;
+    _dspFxHandles.clear();
     if (detachedQueuedStream != null) {
       _bass.BASS_StreamFree(detachedQueuedStream);
     }
@@ -1660,6 +2147,8 @@ class BassPlayer {
   }
 
   void _dropGaplessMixer() {
+    _removeAudioEffects();
+    _removeEQ();
     final mixer = _detachGaplessMixer();
     if (mixer == null) return;
     _bass.BASS_ChannelStop(mixer);
@@ -2022,15 +2511,24 @@ class BassPlayer {
 
   /// true: 操作成功；false: 操作失败
   bool useExclusiveMode(bool exclusive) {
+    _cancelOutputGainFade(keepTarget: true);
     final prevState = wasapiExclusive;
+    if (exclusive == prevState) return true;
     try {
-      if (exclusive && !_isEqFlat) {
-        logger.w('[bass] Cannot enable exclusive mode while EQ is enabled');
-        showTextOnSnackBar(
-          '独占模式与均衡器冲突，请先关闭均衡器（全部归零）',
-          variant: ToastVariant.error,
-        );
+      if (exclusive && !hasAudioSource) {
+        const message = '独占模式未切换：当前没有可用的音频流';
+        logger.w('[bass] $message');
+        showTextOnSnackBar(message, variant: ToastVariant.error);
         return false;
+      }
+      if (exclusive) {
+        final conflicts = exclusiveModeConflicts;
+        if (conflicts.isNotEmpty) {
+          logger.i(
+            '[bass] exclusive mode requested with upper-layer conflicts: '
+            '${conflicts.join('、')}',
+          );
+        }
       }
       final lastPos = position;
       final wasPlaying = playerState == PlayerState.playing;
@@ -2069,6 +2567,7 @@ class BassPlayer {
         // 3) WASAPI 准备就绪，停旧流（间隙极短，仅 Start 耗时）
         _fadeOutOldStream(oldHandle);
         _removeEQ();
+        _removeAudioEffects();
         if (_mixerStream != null) {
           _dropGaplessMixer();
         } else {
@@ -2103,6 +2602,7 @@ class BassPlayer {
         if (wasPlaying) _startPositionUpdater();
       } else if (!exclusive && prevState) {
         _removeEQ();
+        _removeAudioEffects();
         _positionUpdaterVersion++;
         _positionUpdater?.cancel();
         _positionUpdater = null;
@@ -2163,6 +2663,7 @@ class BassPlayer {
       _fadeOutOldStream(oldHandle);
     }
     _removeEQ();
+    _removeAudioEffects();
     if (_mixerStream != null) {
       _dropGaplessMixer();
     } else {
@@ -2209,6 +2710,7 @@ class BassPlayer {
 
     _fstream = handle;
     _streamWasapiExclusive = true;
+    _refreshStreamSampleRate();
     _refreshCachedLength();
 
     if (seekTo > 0.0) {
@@ -2235,6 +2737,7 @@ class BassPlayer {
 
     _fstream = handle;
     _streamWasapiExclusive = false;
+    _refreshStreamSampleRate();
     _refreshCachedLength();
     if (seekTo > 0.0) {
       seek(seekTo);
@@ -2242,6 +2745,7 @@ class BassPlayer {
     if (!_isEqFlat) {
       refreshEQ();
     }
+    refreshAudioEffects();
     _applyPlaybackGains();
     if (startPlayback) {
       start();
@@ -2316,6 +2820,7 @@ class BassPlayer {
   /// if setSource has been called once,
   /// it will pause current channel and free current stream.
   void setSource(String path) {
+    _cancelOutputGainFade(keepTarget: true);
     _replayGainDb = null;
     _activeGaplessTransitionId = null;
     _handledCompletionClearTimer?.cancel();
@@ -2327,6 +2832,7 @@ class BassPlayer {
       _positionUpdater?.cancel();
       _positionUpdater = null;
       _removeEQ();
+      _removeAudioEffects();
       final oldHandle = _sharedOutputHandle!;
       final oldWasapiExclusive = wasapiExclusive || _streamWasapiExclusive;
 
@@ -2356,10 +2862,12 @@ class BassPlayer {
       _fPath = path;
       // 标记当前流是否为独占模式流
       _streamWasapiExclusive = wasapiExclusive;
+      _refreshStreamSampleRate();
       _refreshCachedLength();
 
       try {
         refreshEQ();
+        refreshAudioEffects();
       } catch (e) {
         logger.e('SetSource refreshEQ failed: $e');
       }
@@ -2416,8 +2924,52 @@ class BassPlayer {
 
   /// [BASS_ATTRIB_VOLDSP] attribute does have direct effect on decoding/recording channels.
   void setVolumeDsp(double volume) {
-    _baseOutputVolume = volume;
+    _cancelOutputGainFade();
+    _baseOutputVolume = volume.isFinite
+        ? volume.clamp(0.0, eqOutputVolumeMax).toDouble()
+        : 0.0;
     _applyPlaybackGains();
+  }
+
+  void fadeToVolumeDsp(double volume, {int durationMs = 80}) {
+    final target = volume.isFinite
+        ? volume.clamp(0.0, eqOutputVolumeMax).toDouble()
+        : 0.0;
+    _cancelOutputGainFade();
+    final start = _baseOutputVolume;
+    if (_fstream == null || !start.isFinite || (start - target).abs() < 0.001) {
+      _baseOutputVolume = target;
+      _applyPlaybackGains();
+      return;
+    }
+
+    final steps = math.max(2, (durationMs / 10).round());
+    final intervalMs = math.max(10, (durationMs / steps).round());
+    var step = 0;
+    _outputGainFadeTarget = target;
+    _outputGainFadeTimer = Timer.periodic(Duration(milliseconds: intervalMs), (
+      timer,
+    ) {
+      step++;
+      final progress = (step / steps).clamp(0.0, 1.0).toDouble();
+      _baseOutputVolume = start + (target - start) * progress;
+      _applyPlaybackGains();
+      if (step >= steps) {
+        _baseOutputVolume = target;
+        _outputGainFadeTarget = null;
+        timer.cancel();
+        _outputGainFadeTimer = null;
+        _applyPlaybackGains();
+      }
+    });
+  }
+
+  void _cancelOutputGainFade({bool keepTarget = false}) {
+    _outputGainFadeTimer?.cancel();
+    _outputGainFadeTimer = null;
+    final target = _outputGainFadeTarget;
+    _outputGainFadeTarget = null;
+    if (keepTarget && target != null) _baseOutputVolume = target;
   }
 
   void setRate(double rate) {
@@ -2785,6 +3337,7 @@ class BassPlayer {
   ///
   /// do nothing if [setSource] hasn't been called
   void freeFStream() {
+    _cancelOutputGainFade(keepTarget: true);
     _fadeInTimer?.cancel();
     _fadeInTimer = null;
     _fadeOutTimer?.cancel();
@@ -2818,9 +3371,10 @@ class BassPlayer {
     if (_fstream == null) return;
 
     _stopWasapiOutputIfNeeded();
+    _removeAudioEffects();
+    _removeEQ();
 
     if (_mixerStream != null) {
-      _removeEQ();
       _dropGaplessMixer();
       _fPath = null;
       _cachedLengthSeconds = null;
@@ -2852,8 +3406,10 @@ class BassPlayer {
   ///
   /// Also free the bass.dll.
   void free() {
+    _cancelOutputGainFade(keepTarget: true);
     _fadeInTimer?.cancel();
     _fadeInTimer = null;
+    _cancelEqSmoothing();
     _fadeOutTimer?.cancel();
     _fadeOutTimer = null;
     if (_fadeOutHandle != null) {
@@ -2883,6 +3439,7 @@ class BassPlayer {
 
     // 如果当前是独占模式，需要先清理 WASAPI
     _stopWasapiOutputIfNeeded();
+    _removeAudioEffects();
     if (_mixerStream != null) {
       _removeEQ();
       _dropGaplessMixer();

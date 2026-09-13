@@ -3,6 +3,7 @@ import 'dart:io';
 
 import 'package:flutter/foundation.dart';
 import 'package:pure_music/core/equalizer_action_state.dart';
+import 'package:pure_music/core/audio_dsp_settings.dart';
 import 'package:pure_music/core/list_action_state.dart';
 import 'package:pure_music/core/lyric_render_config.dart';
 import 'package:pure_music/core/paths.dart' as app_paths;
@@ -179,13 +180,77 @@ class NowPlayingPagePreference {
 class EqPreset {
   String name;
   List<double> gains;
+  final int bandModelVersion;
+  final bool hasAudioState;
+  final bool eqEnabled;
+  final double preampDb;
+  final bool eqAutoGainEnabled;
+  final double eqAutoHeadroomDb;
+  final AudioDspSettings audioDspSettings;
 
-  EqPreset(this.name, this.gains);
+  EqPreset(
+    this.name,
+    this.gains, {
+    this.bandModelVersion = currentEqBandModelVersion,
+    this.hasAudioState = true,
+    this.eqEnabled = true,
+    this.preampDb = 0.0,
+    this.eqAutoGainEnabled = true,
+    this.eqAutoHeadroomDb = 1.0,
+    this.audioDspSettings = const AudioDspSettings(),
+  });
 
-  Map<String, dynamic> toMap() => {'name': name, 'gains': gains};
+  Map<String, dynamic> toMap() {
+    final map = <String, dynamic>{
+      'name': name,
+      'gains': gains,
+      'eqBandModelVersion': currentEqBandModelVersion,
+    };
+    if (hasAudioState) {
+      map.addAll({
+        'eqEnabled': eqEnabled,
+        'preampDb': preampDb,
+        'eqAutoGainEnabled': eqAutoGainEnabled,
+        'eqAutoHeadroomDb': eqAutoHeadroomDb,
+        'audioDspSettings': audioDspSettings.toMap(),
+      });
+    }
+    return map;
+  }
 
-  factory EqPreset.fromMap(Map map) =>
-      EqPreset(_normalizedString(map['name']), normalizedEqGains(map['gains']));
+  factory EqPreset.fromMap(Map map) {
+    final storedVersion = _normalizedBoundedInt(
+      map['eqBandModelVersion'],
+      defaultValue: legacyEqBandModelVersion,
+      min: legacyEqBandModelVersion,
+      max: currentEqBandModelVersion,
+    );
+    final hasAudioState =
+        map.containsKey('eqEnabled') ||
+        map.containsKey('preampDb') ||
+        map.containsKey('eqAutoGainEnabled') ||
+        map.containsKey('eqAutoHeadroomDb') ||
+        map.containsKey('audioDspSettings');
+    return EqPreset(
+      _normalizedString(map['name']),
+      migrateEqGains(map['gains'], fromVersion: storedVersion),
+      bandModelVersion: currentEqBandModelVersion,
+      hasAudioState: hasAudioState,
+      eqEnabled: _normalizedBool(map['eqEnabled'], defaultValue: true),
+      preampDb: normalizedEqPreampDb(map['preampDb']),
+      eqAutoGainEnabled: _normalizedBool(
+        map['eqAutoGainEnabled'],
+        defaultValue: true,
+      ),
+      eqAutoHeadroomDb: _normalizedBoundedDouble(
+        map['eqAutoHeadroomDb'],
+        defaultValue: 1.0,
+        min: 0.0,
+        max: 24.0,
+      ),
+      audioDspSettings: AudioDspSettings.fromMap(map['audioDspSettings']),
+    );
+  }
 }
 
 List<EqPreset> _eqPresetsFromStoredValue(Object? value) {
@@ -213,11 +278,33 @@ List<EqPreset> _uniqueEqPresets(Iterable<EqPreset> presets) {
     final existingIndex = indexByKey[key];
     if (existingIndex == null) {
       indexByKey[key] = result.length;
-      result.add(EqPreset(name, gains));
+      result.add(
+        EqPreset(
+          name,
+          gains,
+          bandModelVersion: preset.bandModelVersion,
+          hasAudioState: preset.hasAudioState,
+          eqEnabled: preset.eqEnabled,
+          preampDb: preset.preampDb,
+          eqAutoGainEnabled: preset.eqAutoGainEnabled,
+          eqAutoHeadroomDb: preset.eqAutoHeadroomDb,
+          audioDspSettings: preset.audioDspSettings,
+        ),
+      );
       continue;
     }
     final firstName = result[existingIndex].name;
-    result[existingIndex] = EqPreset(firstName, gains);
+    result[existingIndex] = EqPreset(
+      firstName,
+      gains,
+      bandModelVersion: preset.bandModelVersion,
+      hasAudioState: preset.hasAudioState,
+      eqEnabled: preset.eqEnabled,
+      preampDb: preset.preampDb,
+      eqAutoGainEnabled: preset.eqAutoGainEnabled,
+      eqAutoHeadroomDb: preset.eqAutoHeadroomDb,
+      audioDspSettings: preset.audioDspSettings,
+    );
   }
   return result;
 }
@@ -494,10 +581,13 @@ class PlaybackPreference {
   PlayMode playMode;
   double volumeDsp;
   List<double> eqGains;
+  int eqBandModelVersion;
+  bool eqEnabled;
   double eqPreampDb;
   bool eqAutoGainEnabled;
   double eqAutoHeadroomDb;
   List<EqPreset> eqPresets;
+  AudioDspSettings audioDspSettings;
   String lastAudioPath;
   List<String> lastPlaylistPaths;
   int lastPlaylistIndex;
@@ -514,6 +604,9 @@ class PlaybackPreference {
     this.volumeDsp,
     this.eqGains,
     this.eqPresets, {
+    this.eqBandModelVersion = currentEqBandModelVersion,
+    this.eqEnabled = true,
+    this.audioDspSettings = const AudioDspSettings(),
     this.replayGainEnabled = false,
     this.eqPreampDb = 0.0,
     this.eqAutoGainEnabled = true,
@@ -533,10 +626,13 @@ class PlaybackPreference {
     'playMode': playMode.name,
     'volumeDsp': volumeDsp,
     'eqGains': eqGains,
+    'eqBandModelVersion': currentEqBandModelVersion,
+    'eqEnabled': eqEnabled,
     'eqPreampDb': eqPreampDb,
     'eqAutoGainEnabled': eqAutoGainEnabled,
     'eqAutoHeadroomDb': eqAutoHeadroomDb,
     'eqPresets': eqPresets.map((e) => e.toMap()).toList(),
+    'audioDspSettings': audioDspSettings.toMap(),
     'lastAudioPath': lastAudioPath,
     'lastPlaylistPaths': lastPlaylistPaths,
     'lastPlaylistIndex': lastPlaylistIndex,
@@ -563,13 +659,20 @@ class PlaybackPreference {
     final lastOriginalPlaylistPaths = _normalizedPathStringList(
       map['lastOriginalPlaylistPaths'],
     );
+    final storedEqBandVersion = _normalizedBoundedInt(
+      map['eqBandModelVersion'],
+      defaultValue: legacyEqBandModelVersion,
+      min: legacyEqBandModelVersion,
+      max: currentEqBandModelVersion,
+    );
     return PlaybackPreference(
       _playModeFromStoredValue(map['playMode']) ?? PlayMode.forward,
       _normalizedVolumeDsp(map['volumeDsp']),
-      map['eqGains'] != null
-          ? normalizedEqGains(map['eqGains'])
-          : normalizedEqGains(null),
+      migrateEqGains(map['eqGains'], fromVersion: storedEqBandVersion),
       _eqPresetsFromStoredValue(map['eqPresets']),
+      eqBandModelVersion: currentEqBandModelVersion,
+      eqEnabled: _normalizedBool(map['eqEnabled'], defaultValue: true),
+      audioDspSettings: AudioDspSettings.fromMap(map['audioDspSettings']),
       eqPreampDb: normalizedEqPreampDb(map['eqPreampDb']),
       eqAutoGainEnabled: _normalizedBool(
         map['eqAutoGainEnabled'],

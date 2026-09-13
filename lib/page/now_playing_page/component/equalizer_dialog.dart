@@ -1,14 +1,23 @@
 import 'package:pure_music/component/danger_confirm_dialog.dart';
 import 'package:pure_music/core/equalizer_action_state.dart';
+import 'package:pure_music/core/equalizer_preset_parser.dart';
+import 'package:pure_music/core/audio_dsp_settings.dart';
 import 'package:pure_music/core/design_tokens.dart';
 import 'package:pure_music/core/preference.dart';
 import 'package:pure_music/play_service/play_service.dart';
+import 'package:pure_music/play_service/playback_service.dart';
 import 'package:pure_music/core/utils.dart';
 import 'package:pure_music/core/hotkeys.dart';
 import 'dart:io';
+import 'dart:convert';
+import 'dart:math' as math;
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 import 'package:material_symbols_icons/symbols.dart';
+
+const _maxEqImportFileBytes = 8 * 1024 * 1024;
+const _maxEqImportTotalBytes = 64 * 1024 * 1024;
+const _maxEqImportFileCount = 2048;
 
 class _EqValuePill extends StatelessWidget {
   const _EqValuePill({required this.value});
@@ -49,32 +58,11 @@ class EqualizerDialog extends StatefulWidget {
 class _EqualizerDialogState extends State<EqualizerDialog> {
   late List<double> _gains;
   late double _preampDb;
+  late AudioDspSettings _effects;
   bool _isImportingWaveletEq = false;
   bool _isImportingFolder = false;
-  static const _eqCenters = [
-    '80',
-    '100',
-    '125',
-    '250',
-    '500',
-    '1k',
-    '2k',
-    '4k',
-    '8k',
-    '16k'
-  ];
-  static const _eqFreqs = [
-    80.0,
-    100.0,
-    125.0,
-    250.0,
-    500.0,
-    1000.0,
-    2000.0,
-    4000.0,
-    8000.0,
-    16000.0
-  ];
+  int _tabIndex = 0;
+  static const _eqCenters = eqBandLabels;
 
   @override
   void initState() {
@@ -82,6 +70,53 @@ class _EqualizerDialogState extends State<EqualizerDialog> {
     final playbackService = PlayService.instance.playbackService;
     _gains = List.from(playbackService.eqGains);
     _preampDb = playbackService.eqPreampDb;
+    _effects = playbackService.audioEffects;
+  }
+
+  void _updateEffects(AudioDspSettings effects, {bool save = false}) {
+    _effects = effects.normalized();
+    final playbackService = PlayService.instance.playbackService;
+    playbackService.setAudioEffects(_effects);
+    if (save) playbackService.savePreference();
+    setState(() {});
+  }
+
+  Widget _effectSlider({
+    required String label,
+    required double value,
+    required double min,
+    required double max,
+    required String Function(double) format,
+    required ValueChanged<double> onChanged,
+    bool enabled = true,
+  }) {
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 4),
+      child: Row(
+        children: [
+          SizedBox(width: 48, child: Text(label)),
+          Expanded(
+            child: Slider(
+              value: value.clamp(min, max).toDouble(),
+              min: min,
+              max: max,
+              onChanged: enabled ? onChanged : null,
+              onChangeEnd: enabled
+                  ? (_) => PlayService.instance.playbackService.savePreference()
+                  : null,
+            ),
+          ),
+          SizedBox(
+            width: 48,
+            child: Text(
+              format(value),
+              textAlign: TextAlign.end,
+              style: const TextStyle(fontSize: AppType.microlabel),
+            ),
+          ),
+        ],
+      ),
+    );
   }
 
   Future<void> _importWaveletEq() async {
@@ -95,11 +130,22 @@ class _EqualizerDialogState extends State<EqualizerDialog> {
         dialogTitle: 'Select Wavelet GraphicEQ.txt',
       );
 
-      if (result != null && result.files.single.path != null) {
+      if (result != null && result.files.isNotEmpty) {
         try {
-          final content = await File(result.files.single.path!).readAsString();
-          final fileName =
-              result.files.single.name.split('.').first.replaceAll('.txt', '');
+          final pickedFile = result.files.first;
+          final pickedPath = pickedFile.path;
+          if (pickedPath == null || pickedPath.trim().isEmpty) return;
+          final file = File(pickedPath);
+          final bytes = await _readEqFileBytes(
+            file,
+            remainingBytes: _maxEqImportFileBytes,
+          );
+          if (bytes == null) {
+            if (mounted) showTextOnSnackBar('EQ 文件过大，未导入');
+            return;
+          }
+          final content = _decodeEqText(bytes);
+          final fileName = _waveletPresetName(pickedFile.name);
           if (mounted) {
             final saved = await _applyWaveletEqFromContent(
               content,
@@ -121,64 +167,27 @@ class _EqualizerDialogState extends State<EqualizerDialog> {
     }
   }
 
-  double? _tryParseWaveletPreampDb(String content) {
-    final match = RegExp(
-      r'^\s*preamp\s*:\s*([+-]?\d+(?:\.\d+)?)',
-      multiLine: true,
-      caseSensitive: false,
-    ).firstMatch(content);
-    if (match == null) return null;
-    return double.tryParse(match.group(1) ?? '');
+  String _waveletPresetName(String fileName) {
+    final name = fileName
+        .replaceFirst(RegExp(r'\.txt$', caseSensitive: false), '')
+        .trim();
+    return name.isEmpty ? '导入预设' : name;
   }
 
-  Iterable<MapEntry<double, double>> _extractWaveletPairs(String content) {
-    final normalized = content.replaceAll('\uFEFF', '');
-    final graphicEqMatch = RegExp(
-      r'^\s*graphiceq\s*:\s*(.*)$',
-      multiLine: true,
-      caseSensitive: false,
-    ).firstMatch(normalized);
-
-    final region =
-        graphicEqMatch == null ? normalized : graphicEqMatch.group(1)!;
-    final pairs = <MapEntry<double, double>>[];
-
-    final pairReg = RegExp(
-      r'(\d+(?:[.,]\d+)?)\s*(?:hz)?\s*[:\s]\s*([+-]?\d+(?:[.,]\d+)?)\s*(?:db)?',
-      caseSensitive: false,
-      multiLine: true,
-    );
-    for (final m in pairReg.allMatches(region)) {
-      final freqStr = (m.group(1) ?? '').replaceAll(',', '.');
-      final gainStr = (m.group(2) ?? '').replaceAll(',', '.');
-      final freq = double.tryParse(freqStr);
-      final gain = double.tryParse(gainStr);
-      if (freq == null || gain == null) continue;
-      if (freq <= 0) continue;
-      pairs.add(MapEntry(freq, gain));
+  Future<List<int>?> _readEqFileBytes(
+    File file, {
+    required int remainingBytes,
+  }) async {
+    if (remainingBytes <= 0) return null;
+    final stat = await file.stat();
+    if (stat.size > _maxEqImportFileBytes || stat.size > remainingBytes) {
+      return null;
     }
-
-    return pairs;
-  }
-
-  ({List<double> gains, double? preampDb}) _parseWaveletEqContent(
-    String content,
-  ) {
-    final preampDb = _tryParseWaveletPreampDb(content);
-    final points = _extractWaveletPairs(content).toList()
-      ..sort((a, b) => a.key.compareTo(b.key));
-
-    if (points.isEmpty) {
-      throw const FormatException('No valid GraphicEQ pairs found');
+    final bytes = await file.readAsBytes();
+    if (bytes.length > _maxEqImportFileBytes || bytes.length > remainingBytes) {
+      return null;
     }
-
-    final newGains = List<double>.filled(10, 0.0);
-    for (int i = 0; i < 10; i++) {
-      final centerFreq = _eqFreqs[i];
-      newGains[i] = _interpolateGain(centerFreq, points).clamp(-15.0, 15.0);
-    }
-
-    return (gains: newGains, preampDb: preampDb);
+    return bytes;
   }
 
   Future<bool> _applyWaveletEqFromContent(
@@ -188,201 +197,254 @@ class _EqualizerDialogState extends State<EqualizerDialog> {
   }) async {
     final playbackService = PlayService.instance.playbackService;
 
-    final parsed = _parseWaveletEqContent(content);
+    final parsed = parseWaveletEqContent(content);
     final newGains = parsed.gains;
     final preampDb = parsed.preampDb;
 
-    if (preampDb != null) {
-      _preampDb = preampDb;
-      playbackService.setEqPreampDb(preampDb);
-    }
-
-    for (int i = 0; i < 10; i++) {
-      playbackService.setEQ(i, newGains[i]);
-    }
-    playbackService.savePreference();
-    final saved = await playbackService.saveEqPreset(presetName);
+    final appliedPreamp = (preampDb ?? playbackService.eqPreampDb)
+        .clamp(eqPreampMinDb, eqPreampMaxDb)
+        .toDouble();
+    final saved = await playbackService.importEqPresetsAndApplyLast([
+      EqPreset(
+        presetName,
+        newGains,
+        eqEnabled: playbackService.eqEnabled,
+        preampDb: appliedPreamp,
+        eqAutoGainEnabled: playbackService.eqAutoGainEnabled,
+        eqAutoHeadroomDb: playbackService.eqAutoHeadroomDb,
+        audioDspSettings: playbackService.audioEffects,
+      ),
+    ]);
     if (!saved) return false;
 
     if (!updateState || !mounted) return true;
     setState(() {
       _gains = List.from(newGains);
-      if (preampDb != null) {
-        _preampDb = preampDb;
-      }
+      _preampDb = appliedPreamp;
     });
     return true;
   }
 
   Future<void> _importEqFolder() async {
     if (_isImportingFolder || _isImportingWaveletEq) return;
-    setState(() {
-      _isImportingFolder = true;
-    });
+    setState(() => _isImportingFolder = true);
 
-    final selected = await FilePicker.platform.getDirectoryPath(
-      dialogTitle: '选择 EQ 文件夹（批量导入 .txt）',
-    );
-    if (selected == null) {
-      if (mounted) {
-        setState(() {
-          _isImportingFolder = false;
-        });
+    try {
+      final selected = (await FilePicker.platform.getDirectoryPath(
+        dialogTitle: '选择 EQ 文件夹（批量导入 .txt）',
+      ))?.trim();
+      if (!mounted || selected == null || selected.isEmpty) return;
+
+      final dir = Directory(selected);
+      if (!await dir.exists()) {
+        showTextOnSnackBar('未找到文件夹');
+        return;
       }
-      return;
-    }
 
-    final folderPath = selected;
-    final dir = Directory(folderPath);
-    if (!dir.existsSync()) {
-      if (mounted) showTextOnSnackBar('未找到文件夹');
-      if (mounted) {
-        setState(() {
-          _isImportingFolder = false;
-        });
-      }
-      return;
-    }
-
-    final files = dir
-        .listSync()
-        .whereType<File>()
-        .where((f) => f.path.toLowerCase().endsWith('.txt'))
-        .toList()
-      ..sort((a, b) => a.path.compareTo(b.path));
-
-    if (files.isEmpty) {
-      if (mounted) {
-        showTextOnSnackBar('该文件夹没有可导入的预设');
-        setState(() {
-          _isImportingFolder = false;
-        });
-      }
-      return;
-    }
-
-    String? lastImportedName;
-    String? lastImportedContent;
-
-    for (final f in files) {
-      try {
-        final content = await f.readAsString();
-        final name = f.uri.pathSegments.last.replaceAll('.txt', '');
-        final saved = await _applyWaveletEqFromContent(
-          content,
-          presetName: name,
-          updateState: false,
-        );
-        if (!saved) {
-          continue;
+      final discoveredFiles = <File>[];
+      await for (final entry in dir.list(followLinks: false)) {
+        if (entry is File && entry.path.toLowerCase().endsWith('.txt')) {
+          discoveredFiles.add(entry);
         }
-        lastImportedName = name;
-        lastImportedContent = content;
-      } catch (_) {}
-    }
+      }
+      discoveredFiles.sort(
+        (a, b) => a.path.toLowerCase().compareTo(b.path.toLowerCase()),
+      );
+      final skippedByCount = math.max(
+        0,
+        discoveredFiles.length - _maxEqImportFileCount,
+      );
+      final files = discoveredFiles
+          .take(_maxEqImportFileCount)
+          .toList(growable: false);
 
-    if (lastImportedName != null && lastImportedContent != null && mounted) {
-      try {
-        await _applyWaveletEqFromContent(
-          lastImportedContent,
-          presetName: lastImportedName,
-        );
-      } catch (_) {}
-    }
+      if (files.isEmpty) {
+        showTextOnSnackBar('该文件夹没有可导入的预设');
+        return;
+      }
 
-    if (mounted) {
-      showTextOnSnackBar('已导入预设');
-    }
+      final playbackService = PlayService.instance.playbackService;
+      final currentPreampDb = playbackService.eqPreampDb;
+      final currentEqEnabled = playbackService.eqEnabled;
+      final currentAutoGainEnabled = playbackService.eqAutoGainEnabled;
+      final currentAutoHeadroomDb = playbackService.eqAutoHeadroomDb;
+      final currentEffects = playbackService.audioEffects;
+      final imported = <EqPreset>[];
+      var totalBytes = 0;
+      var failed = skippedByCount;
 
-    if (mounted) {
+      for (final file in files) {
+        try {
+          final bytes = await _readEqFileBytes(
+            file,
+            remainingBytes: _maxEqImportTotalBytes - totalBytes,
+          );
+          if (bytes == null) {
+            failed++;
+            logger.w('跳过过大或发生变化的 EQ 文件：${file.path}');
+            continue;
+          }
+          totalBytes += bytes.length;
+          final content = _decodeEqText(bytes);
+          if (!mounted) return;
+          final fileName = file.uri.pathSegments.isEmpty
+              ? file.path
+              : file.uri.pathSegments.last;
+          final parsed = parseWaveletEqContent(content);
+          final appliedPreamp = (parsed.preampDb ?? currentPreampDb)
+              .clamp(eqPreampMinDb, eqPreampMaxDb)
+              .toDouble();
+          imported.add(
+            EqPreset(
+              _waveletPresetName(fileName),
+              parsed.gains,
+              eqEnabled: currentEqEnabled,
+              preampDb: appliedPreamp,
+              eqAutoGainEnabled: currentAutoGainEnabled,
+              eqAutoHeadroomDb: currentAutoHeadroomDb,
+              audioDspSettings: currentEffects,
+            ),
+          );
+        } catch (error, trace) {
+          failed++;
+          logger.w('跳过无效的 EQ 文件：${file.path}', error: error, stackTrace: trace);
+        }
+      }
+
+      if (imported.isEmpty) {
+        showTextOnSnackBar('没有成功导入的 EQ 预设', variant: ToastVariant.error);
+        return;
+      }
+
+      final saved = await playbackService.importEqPresetsAndApplyLast(imported);
+      if (!saved) {
+        showTextOnSnackBar('批量保存 EQ 预设失败', variant: ToastVariant.error);
+        return;
+      }
+      if (!mounted) return;
+
+      final last = imported.last;
       setState(() {
-        _isImportingFolder = false;
+        _gains = List.from(last.gains);
+        _preampDb = last.preampDb;
       });
+      showTextOnSnackBar(
+        failed == 0
+            ? '已导入 ${imported.length} 个 EQ 预设'
+            : '已导入 ${imported.length} 个，跳过 $failed 个无效文件',
+      );
+    } catch (error, trace) {
+      logger.e('批量导入均衡器预设失败', error: error, stackTrace: trace);
+      if (mounted) {
+        showTextOnSnackBar('批量导入均衡器预设失败，请查看日志');
+      }
+    } finally {
+      if (mounted) setState(() => _isImportingFolder = false);
     }
   }
 
-  double _interpolateGain(
-      double targetFreq, List<MapEntry<double, double>> points) {
-    // Find closest points
-    if (targetFreq <= points.first.key) return points.first.value;
-    if (targetFreq >= points.last.key) return points.last.value;
-
-    for (int i = 0; i < points.length - 1; i++) {
-      final p1 = points[i];
-      final p2 = points[i + 1];
-      if (targetFreq >= p1.key && targetFreq <= p2.key) {
-        // Linear interpolation
-        final t = (targetFreq - p1.key) / (p2.key - p1.key);
-        return p1.value + (p2.value - p1.value) * t;
+  String _decodeEqText(List<int> bytes) {
+    if (bytes.length >= 2 && bytes[0] == 0xFF && bytes[1] == 0xFE) {
+      final codeUnits = <int>[];
+      for (var i = 2; i + 1 < bytes.length; i += 2) {
+        codeUnits.add(bytes[i] | (bytes[i + 1] << 8));
       }
+      return String.fromCharCodes(codeUnits);
     }
-    return 0.0;
+    if (bytes.length >= 2 && bytes[0] == 0xFE && bytes[1] == 0xFF) {
+      final codeUnits = <int>[];
+      for (var i = 2; i + 1 < bytes.length; i += 2) {
+        codeUnits.add((bytes[i] << 8) | bytes[i + 1]);
+      }
+      return String.fromCharCodes(codeUnits);
+    }
+    return utf8.decode(bytes, allowMalformed: true);
   }
 
   void _savePreset() {
     final controller = TextEditingController();
+    var isSaving = false;
     showDialog(
       context: context,
-      builder: (context) => AlertDialog(
-        title: const Text('保存预设'),
-        content: Focus(
-          onFocusChange: HotkeysHelper.onFocusChanges,
-          child: TextField(
-            controller: controller,
-            decoration: const InputDecoration(labelText: '预设名称'),
-            autofocus: true,
+      builder: (dialogContext) => StatefulBuilder(
+        builder: (context, setDialogState) => AlertDialog(
+          title: const Text('保存预设'),
+          content: Focus(
+            onFocusChange: HotkeysHelper.onFocusChanges,
+            child: TextField(
+              controller: controller,
+              decoration: const InputDecoration(labelText: '预设名称'),
+              autofocus: true,
+              enabled: !isSaving,
+            ),
           ),
+          actions: [
+            TextButton(
+              onPressed: isSaving
+                  ? null
+                  : () => Navigator.of(dialogContext).pop(),
+              child: const Text('取消'),
+            ),
+            ValueListenableBuilder<TextEditingValue>(
+              valueListenable: controller,
+              builder: (context, value, _) {
+                final playbackService = PlayService.instance.playbackService;
+                final existingName = findEquivalentEqPresetName(
+                  existingNames: playbackService.eqPresets.map((e) => e.name),
+                  input: value.text,
+                );
+                final presetName =
+                    existingName ?? normalizedEqPresetName(value.text);
+                final canSubmit = canSubmitEqPresetName(
+                  input: value.text,
+                  isSaving: isSaving,
+                );
+                return TextButton(
+                  onPressed: !canSubmit
+                      ? null
+                      : () async {
+                          setDialogState(() => isSaving = true);
+                          final saved = await playbackService.saveEqPreset(
+                            presetName,
+                          );
+                          if (!dialogContext.mounted) return;
+                          if (!saved) {
+                            setDialogState(() => isSaving = false);
+                            showTextOnSnackBar(
+                              '保存均衡器预设失败',
+                              variant: ToastVariant.error,
+                            );
+                            return;
+                          }
+                          Navigator.of(dialogContext).pop();
+                          if (mounted) {
+                            showTextOnSnackBar(
+                              '已保存预设',
+                              variant: ToastVariant.success,
+                            );
+                            setState(() {});
+                          }
+                        },
+                  child: isSaving
+                      ? const SizedBox(
+                          width: 18,
+                          height: 18,
+                          child: CircularProgressIndicator(strokeWidth: 2),
+                        )
+                      : Text(existingName == null ? '保存' : '更新'),
+                );
+              },
+            ),
+          ],
         ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.of(context).pop(),
-            child: const Text('取消'),
-          ),
-          ValueListenableBuilder<TextEditingValue>(
-            valueListenable: controller,
-            builder: (context, value, _) {
-              final playbackService = PlayService.instance.playbackService;
-              final existingName = findEquivalentEqPresetName(
-                existingNames: playbackService.eqPresets.map((e) => e.name),
-                input: value.text,
-              );
-              final presetName =
-                  existingName ?? normalizedEqPresetName(value.text);
-              final canSubmit = canSubmitEqPresetName(
-                input: value.text,
-                isSaving: false,
-              );
-              return TextButton(
-                onPressed: !canSubmit
-                    ? null
-                    : () async {
-                        final saved =
-                            await playbackService.saveEqPreset(presetName);
-                        if (!context.mounted) return;
-                        if (!saved) {
-                          showTextOnSnackBar('保存均衡器预设失败',
-                              variant: ToastVariant.error);
-                          return;
-                        }
-                        Navigator.of(context).pop();
-                        if (mounted) {
-                          showTextOnSnackBar('已保存预设',
-                              variant: ToastVariant.success);
-                          setState(() {});
-                        }
-                      },
-                child: Text(existingName == null ? '保存' : '更新'),
-              );
-            },
-          ),
-        ],
       ),
     ).whenComplete(controller.dispose);
   }
 
   Future<void> _applyPreset(EqPreset preset) async {
-    final saved =
-        await PlayService.instance.playbackService.applyEqPreset(preset);
+    final saved = await PlayService.instance.playbackService.applyEqPreset(
+      preset,
+    );
     if (!mounted) return;
     if (!saved) {
       showTextOnSnackBar('保存均衡器设置失败', variant: ToastVariant.error);
@@ -391,6 +453,10 @@ class _EqualizerDialogState extends State<EqualizerDialog> {
     showTextOnSnackBar('已应用预设', variant: ToastVariant.success);
     setState(() {
       _gains = List.from(preset.gains);
+      if (preset.hasAudioState) {
+        _preampDb = preset.preampDb;
+        _effects = preset.audioDspSettings;
+      }
     });
   }
 
@@ -406,7 +472,9 @@ class _EqualizerDialogState extends State<EqualizerDialog> {
         maxLines: 2,
         overflow: TextOverflow.ellipsis,
         style: TextStyle(
-            color: scheme.onSurfaceVariant, fontSize: AppType.caption),
+          color: scheme.onSurfaceVariant,
+          fontSize: AppType.caption,
+        ),
       ),
     );
     if (!confirmed || !mounted) return;
@@ -428,9 +496,38 @@ class _EqualizerDialogState extends State<EqualizerDialog> {
   }
 
   bool _matchesCurrentGains(EqPreset preset) {
-    if (preset.gains.length != _gains.length) return false;
+    final playbackService = PlayService.instance.playbackService;
+    if (preset.gains.length != playbackService.eqGains.length) return false;
     for (var i = 0; i < _gains.length; i++) {
-      if ((preset.gains[i] - _gains[i]).abs() > 0.001) return false;
+      if ((preset.gains[i] - playbackService.eqGains[i]).abs() > 0.001) {
+        return false;
+      }
+    }
+    if (!preset.hasAudioState) return true;
+    if (preset.eqEnabled != playbackService.eqEnabled) return false;
+    if ((preset.preampDb - playbackService.eqPreampDb).abs() > 0.001) {
+      return false;
+    }
+    if (preset.eqAutoGainEnabled != playbackService.eqAutoGainEnabled) {
+      return false;
+    }
+    if ((preset.eqAutoHeadroomDb - playbackService.eqAutoHeadroomDb).abs() >
+        0.001) {
+      return false;
+    }
+    final currentEffects = playbackService.audioEffects;
+    final presetEffects = preset.audioDspSettings;
+    if (currentEffects.enabled != presetEffects.enabled ||
+        currentEffects.limiterEnabled != presetEffects.limiterEnabled ||
+        (currentEffects.highPassHz - presetEffects.highPassHz).abs() > 0.001 ||
+        (currentEffects.lowPassHz - presetEffects.lowPassHz).abs() > 0.001 ||
+        (currentEffects.drive - presetEffects.drive).abs() > 0.001 ||
+        (currentEffects.reverb - presetEffects.reverb).abs() > 0.001 ||
+        (currentEffects.punch - presetEffects.punch).abs() > 0.001 ||
+        (currentEffects.limiterCeilingDb - presetEffects.limiterCeilingDb)
+                .abs() >
+            0.001) {
+      return false;
     }
     return true;
   }
@@ -442,8 +539,9 @@ class _EqualizerDialogState extends State<EqualizerDialog> {
     final presets = playbackService.eqPresets;
     final viewSize = MediaQuery.sizeOf(context);
     final contentWidth = (viewSize.width - 96).clamp(280.0, 600.0).toDouble();
-    final contentHeight =
-        (viewSize.height - 260).clamp(220.0, 360.0).toDouble();
+    final contentHeight = (viewSize.height - 260)
+        .clamp(220.0, 360.0)
+        .toDouble();
     final bandsWidth = contentWidth < 520 ? 520.0 : contentWidth;
     final isImporting = _isImportingWaveletEq || _isImportingFolder;
 
@@ -455,7 +553,6 @@ class _EqualizerDialogState extends State<EqualizerDialog> {
           const SizedBox(width: 12),
           const Text('均衡器'),
           const Spacer(),
-          // Presets Menu
           MenuAnchor(
             builder: (context, controller, child) {
               return IconButton(
@@ -474,10 +571,7 @@ class _EqualizerDialogState extends State<EqualizerDialog> {
             },
             menuChildren: [
               if (presets.isEmpty)
-                const MenuItemButton(
-                  onPressed: null,
-                  child: Text('无预设'),
-                ),
+                const MenuItemButton(onPressed: null, child: Text('无预设')),
               ...presets.map((preset) {
                 final selected = _matchesCurrentGains(preset);
                 return MenuItemButton(
@@ -493,6 +587,31 @@ class _EqualizerDialogState extends State<EqualizerDialog> {
                   child: Text(preset.name),
                 );
               }),
+              const Divider(),
+              for (final preset in builtInAudioPresets)
+                MenuItemButton(
+                  onPressed: isImporting
+                      ? null
+                      : () async {
+                          final saved = await playbackService
+                              .applyBuiltInAudioPreset(preset);
+                          if (!mounted) return;
+                          if (!saved) {
+                            showTextOnSnackBar(
+                              '保存均衡器设置失败',
+                              variant: ToastVariant.error,
+                            );
+                            return;
+                          }
+                          setState(() {
+                            _gains = List.from(preset.gains);
+                            _preampDb = preset.preampDb;
+                            _effects = playbackService.audioEffects;
+                          });
+                        },
+                  leadingIcon: const Icon(Symbols.tune),
+                  child: Text(preset.name),
+                ),
               const Divider(),
               MenuItemButton(
                 onPressed: isImporting ? null : _savePreset,
@@ -535,129 +654,380 @@ class _EqualizerDialogState extends State<EqualizerDialog> {
         height: contentHeight,
         child: Column(
           children: [
-            Row(
-              children: [
-                Text(
-                  '前级增益',
-                  style: TextStyle(
-                    color: scheme.onSurface,
-                    fontWeight: AppType.weightSemibold,
-                  ),
+            SegmentedButton<int>(
+              segments: const [
+                ButtonSegment<int>(
+                  value: 0,
+                  icon: Icon(Symbols.equalizer, size: 18),
+                  label: Text('均衡器'),
                 ),
-                const SizedBox(width: 8),
-                _EqValuePill(value: _preampDb),
-                const SizedBox(width: 12),
-                Expanded(
-                  child: Slider(
-                    min: -24.0,
-                    max: 24.0,
-                    value: _preampDb.clamp(-24.0, 24.0).toDouble(),
-                    onChanged: isImporting
-                        ? null
-                        : (value) {
-                            setState(() {
-                              _preampDb = value;
-                            });
-                            playbackService.setEqPreampDb(value);
-                          },
-                    onChangeEnd: isImporting
-                        ? null
-                        : (_) => playbackService.savePreference(),
-                  ),
+                ButtonSegment<int>(
+                  value: 1,
+                  icon: Icon(Symbols.tune, size: 18),
+                  label: Text('音效'),
                 ),
               ],
+              selected: {_tabIndex},
+              showSelectedIcon: false,
+              onSelectionChanged: (selection) {
+                setState(() => _tabIndex = selection.first);
+              },
+              style: const ButtonStyle(visualDensity: VisualDensity.compact),
             ),
-            const SizedBox(height: 20),
+            const SizedBox(height: 12),
             Expanded(
-              child: SingleChildScrollView(
-                scrollDirection: Axis.horizontal,
-                child: SizedBox(
-                  width: bandsWidth,
-                  child: Row(
-                    mainAxisAlignment: MainAxisAlignment.spaceEvenly,
-                    children: List.generate(10, (index) {
-                      return Column(
-                        children: [
-                          Text(
-                            '${_gains[index].toInt()}',
-                            style: TextStyle(
-                              fontSize: AppType.microlabel,
-                              color: scheme.onSurfaceVariant,
-                            ),
-                          ),
-                          Expanded(
-                            child: RotatedBox(
-                              quarterTurns: 3,
-                              child: SliderTheme(
-                                data: SliderTheme.of(context).copyWith(
-                                  trackHeight: 4.0,
-                                  thumbShape: const RoundSliderThumbShape(
-                                    enabledThumbRadius: 6.0,
-                                  ),
-                                  overlayShape: const RoundSliderOverlayShape(
-                                    overlayRadius: 14.0,
-                                  ),
-                                ),
-                                child: Slider(
-                                  min: -15.0,
-                                  max: 15.0,
-                                  value: _gains[index],
-                                  onChanged: isImporting
-                                      ? null
-                                      : (value) {
-                                          setState(() {
-                                            _gains[index] = value;
-                                          });
-                                          playbackService.setEQ(index, value);
-                                        },
-                                  onChangeEnd: isImporting
-                                      ? null
-                                      : (_) {
-                                          playbackService.savePreference();
-                                        },
-                                ),
-                              ),
-                            ),
-                          ),
-                          const SizedBox(height: 8),
-                          Text(
-                            _eqCenters[index],
-                            style:
-                                const TextStyle(fontSize: AppType.microlabel),
-                          ),
-                        ],
-                      );
-                    }),
-                  ),
-                ),
-              ),
+              child: _tabIndex == 0
+                  ? _buildEqPanel(
+                      scheme,
+                      playbackService,
+                      isImporting,
+                      bandsWidth,
+                    )
+                  : _buildEffectsPanel(disabled: isImporting),
             ),
           ],
         ),
       ),
       actions: [
         TextButton.icon(
-          onPressed: isImporting || _isFlatEq
+          onPressed:
+              isImporting || (_tabIndex == 0 ? _isFlatEq : _isDefaultEffects)
               ? null
               : () {
-                  setState(() {
-                    _gains = List.filled(10, 0.0);
-                    _preampDb = 0.0;
-                  });
-                  for (int i = 0; i < 10; i++) {
-                    playbackService.setEQ(i, 0.0);
+                  if (_tabIndex == 0) {
+                    setState(() {
+                      _gains = List.filled(eqBandCount, 0.0);
+                      _preampDb = 0.0;
+                    });
+                    playbackService.applyEqGainsSnapshot(
+                      List.filled(eqBandCount, 0.0),
+                      preampDb: 0.0,
+                    );
+                    playbackService.savePreference();
+                  } else {
+                    _updateEffects(const AudioDspSettings(), save: true);
                   }
-                  playbackService.setEqPreampDb(0.0);
-                  playbackService.savePreference();
                 },
           icon: const Icon(Symbols.restart_alt),
-          label: const Text('全部归零'),
+          label: Text(_tabIndex == 0 ? 'EQ 归零' : '重置音效'),
         ),
         TextButton(
           onPressed: isImporting ? null : () => Navigator.of(context).pop(),
           child: const Text('关闭'),
         ),
       ],
+    );
+  }
+
+  bool get _isDefaultEffects {
+    return !_effects.enabled &&
+        (_effects.highPassHz - dspHighPassMinHz).abs() < 1e-6 &&
+        (_effects.lowPassHz - dspLowPassMaxHz).abs() < 1e-6 &&
+        _effects.drive.abs() < 1e-6 &&
+        _effects.reverb.abs() < 1e-6 &&
+        _effects.punch.abs() < 1e-6 &&
+        !_effects.limiterEnabled &&
+        (_effects.limiterCeilingDb + 1.0).abs() < 1e-6;
+  }
+
+  Widget _buildEqPanel(
+    ColorScheme scheme,
+    PlaybackService playbackService,
+    bool isImporting,
+    double bandsWidth,
+  ) {
+    return Column(
+      children: [
+        Row(
+          children: [
+            Text(
+              '启用均衡器',
+              style: TextStyle(
+                color: scheme.onSurface,
+                fontWeight: AppType.weightSemibold,
+              ),
+            ),
+            const Spacer(),
+            Switch(
+              value: playbackService.eqEnabled,
+              onChanged: isImporting
+                  ? null
+                  : (value) {
+                      playbackService.setEqEnabled(value);
+                      playbackService.savePreference();
+                      setState(() {});
+                    },
+            ),
+          ],
+        ),
+        const SizedBox(height: 8),
+        Row(
+          children: [
+            Text(
+              '前级增益',
+              style: TextStyle(
+                color: scheme.onSurface,
+                fontWeight: AppType.weightSemibold,
+              ),
+            ),
+            const SizedBox(width: 8),
+            _EqValuePill(value: _preampDb),
+            const SizedBox(width: 12),
+            Expanded(
+              child: Slider(
+                min: -24.0,
+                max: 24.0,
+                value: _preampDb.clamp(-24.0, 24.0).toDouble(),
+                onChanged: isImporting
+                    ? null
+                    : (value) {
+                        setState(() {
+                          _preampDb = value;
+                        });
+                        playbackService.setEqPreampDb(value);
+                      },
+                onChangeEnd: isImporting
+                    ? null
+                    : (_) => playbackService.savePreference(),
+              ),
+            ),
+          ],
+        ),
+        const SizedBox(height: 12),
+        Row(
+          children: [
+            const Text('自动防削波'),
+            const Spacer(),
+            Text(
+              '${playbackService.eqAutoGainDb.toStringAsFixed(1)} dB',
+              style: TextStyle(
+                color: scheme.onSurfaceVariant,
+                fontSize: AppType.microlabel,
+              ),
+            ),
+            Switch(
+              value: playbackService.eqAutoGainEnabled,
+              onChanged: isImporting
+                  ? null
+                  : (value) {
+                      playbackService.setEqAutoGainEnabled(value);
+                      playbackService.savePreference();
+                      setState(() {});
+                    },
+            ),
+          ],
+        ),
+        Row(
+          children: [
+            const Text('保护余量'),
+            const SizedBox(width: 8),
+            _EqValuePill(value: playbackService.eqAutoHeadroomDb),
+            const SizedBox(width: 12),
+            Expanded(
+              child: Slider(
+                min: 0.0,
+                max: 6.0,
+                value: playbackService.eqAutoHeadroomDb
+                    .clamp(0.0, 6.0)
+                    .toDouble(),
+                onChanged: isImporting
+                    ? null
+                    : (value) {
+                        playbackService.setEqAutoHeadroomDb(value);
+                        setState(() {});
+                      },
+                onChangeEnd: isImporting
+                    ? null
+                    : (_) => playbackService.savePreference(),
+              ),
+            ),
+          ],
+        ),
+        const SizedBox(height: 4),
+        Expanded(
+          child: SingleChildScrollView(
+            scrollDirection: Axis.horizontal,
+            child: SizedBox(
+              width: bandsWidth,
+              child: Row(
+                mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+                children: List.generate(eqBandCount, (index) {
+                  return Column(
+                    children: [
+                      Text(
+                        '${_gains[index].toInt()}',
+                        style: TextStyle(
+                          fontSize: AppType.microlabel,
+                          color: scheme.onSurfaceVariant,
+                        ),
+                      ),
+                      Expanded(
+                        child: RotatedBox(
+                          quarterTurns: 3,
+                          child: SliderTheme(
+                            data: SliderTheme.of(context).copyWith(
+                              trackHeight: 4.0,
+                              thumbShape: const RoundSliderThumbShape(
+                                enabledThumbRadius: 6.0,
+                              ),
+                              overlayShape: const RoundSliderOverlayShape(
+                                overlayRadius: 14.0,
+                              ),
+                            ),
+                            child: Slider(
+                              min: -15.0,
+                              max: 15.0,
+                              value: _gains[index],
+                              onChanged:
+                                  isImporting || !playbackService.eqEnabled
+                                  ? null
+                                  : (value) {
+                                      setState(() {
+                                        _gains[index] = value;
+                                      });
+                                      playbackService.setEQ(index, value);
+                                    },
+                              onChangeEnd: isImporting
+                                  ? null
+                                  : (_) {
+                                      playbackService.savePreference();
+                                    },
+                            ),
+                          ),
+                        ),
+                      ),
+                      const SizedBox(height: 8),
+                      Text(
+                        _eqCenters[index],
+                        style: const TextStyle(fontSize: AppType.microlabel),
+                      ),
+                    ],
+                  );
+                }),
+              ),
+            ),
+          ),
+        ),
+      ],
+    );
+  }
+
+  Widget _buildEffectsPanel({required bool disabled}) {
+    return SingleChildScrollView(
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              const Text('启用音效处理'),
+              const Spacer(),
+              Switch(
+                value: _effects.enabled,
+                onChanged: disabled
+                    ? null
+                    : (value) {
+                        _updateEffects(
+                          _effects.copyWith(enabled: value),
+                          save: true,
+                        );
+                      },
+              ),
+            ],
+          ),
+          Row(
+            children: [
+              const Text('峰值保护'),
+              const Spacer(),
+              Switch(
+                value: _effects.limiterEnabled,
+                onChanged: disabled
+                    ? null
+                    : (value) {
+                        _updateEffects(
+                          _effects.copyWith(limiterEnabled: value),
+                          save: true,
+                        );
+                      },
+              ),
+            ],
+          ),
+          if (_effects.limiterEnabled)
+            _effectSlider(
+              label: '上限',
+              value: _effects.limiterCeilingDb,
+              min: -12,
+              max: -0.1,
+              format: (value) => '${value.toStringAsFixed(1)}dB',
+              onChanged: (value) =>
+                  _updateEffects(_effects.copyWith(limiterCeilingDb: value)),
+              enabled: !disabled,
+            ),
+          _effectSlider(
+            label: '高通',
+            value: _effects.highPassHz,
+            min: dspHighPassMinHz,
+            max: math.min(
+              dspHighPassMaxHz,
+              _effects.lowPassHz - dspMinimumPassBandGapHz,
+            ),
+            format: (value) => '${value.round()}Hz',
+            onChanged: (value) =>
+                _updateEffects(_effects.copyWith(highPassHz: value)),
+            enabled: !disabled,
+          ),
+          _effectSlider(
+            label: '低通',
+            value: _effects.lowPassHz,
+            min: math.max(
+              dspLowPassMinHz,
+              _effects.highPassHz + dspMinimumPassBandGapHz,
+            ),
+            max: dspLowPassMaxHz,
+            format: (value) => '${(value / 1000).toStringAsFixed(1)}k',
+            onChanged: (value) =>
+                _updateEffects(_effects.copyWith(lowPassHz: value)),
+            enabled: !disabled,
+          ),
+          _effectSlider(
+            label: '驱动',
+            value: _effects.drive,
+            min: 0,
+            max: 1,
+            format: (value) => '${(value * 100).round()}%',
+            onChanged: (value) =>
+                _updateEffects(_effects.copyWith(drive: value)),
+            enabled: !disabled,
+          ),
+          _effectSlider(
+            label: '混响',
+            value: _effects.reverb,
+            min: 0,
+            max: 1,
+            format: (value) => '${(value * 100).round()}%',
+            onChanged: (value) =>
+                _updateEffects(_effects.copyWith(reverb: value)),
+            enabled: !disabled,
+          ),
+          _effectSlider(
+            label: '压缩',
+            value: _effects.punch,
+            min: 0,
+            max: 1,
+            format: (value) => '${(value * 100).round()}%',
+            onChanged: (value) =>
+                _updateEffects(_effects.copyWith(punch: value)),
+            enabled: !disabled,
+          ),
+          const SizedBox(height: 8),
+          Text(
+            '处理顺序：EQ → 滤波 → 染色 → 压缩 → 输出 → 峰值保护',
+            style: TextStyle(
+              color: Theme.of(context).colorScheme.onSurfaceVariant,
+              fontSize: AppType.microlabel,
+            ),
+          ),
+        ],
+      ),
     );
   }
 }
