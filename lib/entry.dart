@@ -188,6 +188,7 @@ class _EntryState extends State<Entry>
     super.initState();
     windowManager.addListener(this);
     WidgetsBinding.instance.addObserver(this);
+    AppSettings.backgroundNotifier.addListener(_applyWindowTransparent);
 
     WidgetsBinding.instance.addPostFrameCallback((_) {
       AudioEchoLogRecorder.instance.start(
@@ -204,9 +205,26 @@ class _EntryState extends State<Entry>
   void dispose() {
     _resizeIdleTimer?.cancel();
     _windowResizing.dispose();
+    AppSettings.backgroundNotifier.removeListener(_applyWindowTransparent);
     WidgetsBinding.instance.removeObserver(this);
     windowManager.removeListener(this);
     super.dispose();
+  }
+
+  void _applyWindowTransparent() {
+    final settings = AppSettings.instance;
+    if (settings.appWindowTransparent) {
+      windowManager.setBackgroundColor(Colors.transparent);
+    } else {
+      windowManager.setBackgroundColor(
+        Color(
+          settings.appBackgroundImagePath != null
+              ? 0xFF000000
+              : ThemeProvider.instance.currScheme.surfaceContainerLow
+                    .toARGB32(),
+        ),
+      );
+    }
   }
 
   @override

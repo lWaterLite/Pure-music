@@ -242,7 +242,7 @@ class AppSettings {
   static final listMotionNotifier = RebuildNotifier();
   static const String version = String.fromEnvironment(
     'APP_VERSION',
-    defaultValue: '2.2.3',
+    defaultValue: '2.2.5',
   );
 
   static GitHub? _github;
@@ -324,6 +324,9 @@ class AppSettings {
   String? appBackgroundImagePath;
   double appBackgroundImageOpacity = 0.22;
   double appBackgroundImageBlur = 0;
+  bool appWindowTransparent = false;
+  double appWindowOpacity = 1.0;
+  double appWindowBlur = 0;
   Size windowSize = const Size(1280, 756);
   bool isWindowMaximized = false;
   WindowCloseBehavior windowCloseBehavior = WindowCloseBehavior.exit;
@@ -414,6 +417,18 @@ class AppSettings {
     final backgroundBlur = settingsMap['AppBackgroundImageBlur'];
     _instance.appBackgroundImageBlur = backgroundBlur is num
         ? backgroundBlur.clamp(0.0, 30.0).toDouble()
+        : 0.0;
+    _instance.appWindowTransparent = normalizedBoolSetting(
+      settingsMap['AppWindowTransparent'],
+      defaultValue: false,
+    );
+    final windowOpacity = settingsMap['AppWindowOpacity'];
+    _instance.appWindowOpacity = windowOpacity is num
+        ? windowOpacity.clamp(0.1, 1.0).toDouble()
+        : 1.0;
+    final windowBlur = settingsMap['AppWindowBlur'];
+    _instance.appWindowBlur = windowBlur is num
+        ? windowBlur.clamp(0.0, 30.0).toDouble()
         : 0.0;
     final oldSep = settingsMap['ArtistSeparator'];
     if (oldSep != null) {
@@ -719,6 +734,18 @@ class AppSettings {
     final backgroundBlur = settingsMap['AppBackgroundImageBlur'];
     _instance.appBackgroundImageBlur = backgroundBlur is num
         ? backgroundBlur.clamp(0.0, 30.0).toDouble()
+        : 0.0;
+    _instance.appWindowTransparent = normalizedBoolSetting(
+      settingsMap['AppWindowTransparent'],
+      defaultValue: false,
+    );
+    final windowOpacity = settingsMap['AppWindowOpacity'];
+    _instance.appWindowOpacity = windowOpacity is num
+        ? windowOpacity.clamp(0.1, 1.0).toDouble()
+        : 1.0;
+    final windowBlur = settingsMap['AppWindowBlur'];
+    _instance.appWindowBlur = windowBlur is num
+        ? windowBlur.clamp(0.0, 30.0).toDouble()
         : 0.0;
 
     final sizeStr = settingsMap['WindowSize'];
@@ -1045,6 +1072,9 @@ class AppSettings {
         'AppBackgroundImagePath': appBackgroundImagePath,
         'AppBackgroundImageOpacity': appBackgroundImageOpacity,
         'AppBackgroundImageBlur': appBackgroundImageBlur,
+        'AppWindowTransparent': appWindowTransparent,
+        'AppWindowOpacity': appWindowOpacity,
+        'AppWindowBlur': appWindowBlur,
         'IsWindowMaximized': isMaximized,
         'WindowCloseBehavior': windowCloseBehavior.name,
         'FontFamily': fontFamily,

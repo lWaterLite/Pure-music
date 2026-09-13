@@ -60,28 +60,34 @@ final Map<String, double> _backgroundLuminanceCache = {};
 Future<double> _resolveBackgroundLuminance(String path) async {
   final cached = _backgroundLuminanceCache[path];
   if (cached != null) return cached;
+  Codec? codec;
   try {
     final bytes = await File(path).readAsBytes();
-    final codec = await instantiateImageCodec(bytes, targetWidth: 64);
+    codec = await instantiateImageCodec(bytes, targetWidth: 64);
     final frame = await codec.getNextFrame();
     final image = frame.image;
-    final data = await image.toByteData(format: ImageByteFormat.rawRgba);
-    image.dispose();
-    if (data == null) return 0.5;
-    final pixels = data.buffer.asUint8List();
-    var sum = 0.0;
-    for (var i = 0; i < pixels.length; i += 4) {
-      final r = pixels[i] / 255;
-      final g = pixels[i + 1] / 255;
-      final b = pixels[i + 2] / 255;
-      sum += 0.2126 * r + 0.7152 * g + 0.0722 * b;
+    try {
+      final data = await image.toByteData(format: ImageByteFormat.rawRgba);
+      if (data == null) return 0.5;
+      final pixels = data.buffer.asUint8List();
+      var sum = 0.0;
+      for (var i = 0; i < pixels.length; i += 4) {
+        final r = pixels[i] / 255;
+        final g = pixels[i + 1] / 255;
+        final b = pixels[i + 2] / 255;
+        sum += 0.2126 * r + 0.7152 * g + 0.0722 * b;
+      }
+      final luminance = sum / (pixels.length / 4);
+      _backgroundLuminanceCache[path] = luminance;
+      return luminance;
+    } finally {
+      image.dispose();
     }
-    final luminance = sum / (pixels.length / 4);
-    _backgroundLuminanceCache[path] = luminance;
-    return luminance;
   } catch (_) {
     _backgroundLuminanceCache[path] = 0.5;
     return 0.5;
+  } finally {
+    codec?.dispose();
   }
 }
 
@@ -132,12 +138,38 @@ class _AppBackgroundState extends State<_AppBackground> {
   Widget build(BuildContext context) {
     final settings = AppSettings.instance;
     final imagePath = widget.imagePath;
+    final transparent = settings.appWindowTransparent;
     final blur = settings.appBackgroundImageBlur;
     final isDark = Theme.of(context).brightness == Brightness.dark;
     final maskColor = isDark ? Colors.black : Colors.white;
     final maskAlpha = isDark
         ? 0.25 + 0.2 * _imageLuminance
         : 0.25 + 0.2 * (1 - _imageLuminance);
+
+    if (transparent) {
+      final bgColor = widget.fallbackColor.withValues(
+        alpha: settings.appWindowOpacity,
+      );
+      final windowBlur = settings.appWindowBlur;
+      return Stack(
+        fit: StackFit.expand,
+        children: [
+          ColoredBox(color: bgColor),
+          if (windowBlur > 0)
+            BackdropFilter(
+              filter: ImageFilter.blur(
+                sigmaX: windowBlur,
+                sigmaY: windowBlur,
+                tileMode: TileMode.clamp,
+              ),
+              child: widget.child,
+            )
+          else
+            widget.child,
+        ],
+      );
+    }
+
     return Stack(
       fit: StackFit.expand,
       children: [

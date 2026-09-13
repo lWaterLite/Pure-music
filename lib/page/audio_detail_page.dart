@@ -2267,6 +2267,7 @@ class _CoverSearchDialogState extends State<_CoverSearchDialog> {
   Future<void> _loadImageSize(String url) async {
     if (_coverImageSizeCache.containsKey(url)) return;
     io.HttpClient? client;
+    ui.Codec? codec;
     try {
       client = io.HttpClient();
       client.connectionTimeout = const Duration(seconds: 8);
@@ -2284,13 +2285,19 @@ class _CoverSearchDialogState extends State<_CoverSearchDialog> {
         bytes.setRange(offset, offset + chunk.length, chunk);
         offset += chunk.length;
       }
-      final codec = await ui.instantiateImageCodec(bytes);
+      codec = await ui.instantiateImageCodec(bytes);
       final frame = await codec.getNextFrame();
-      if (!mounted) return;
-      setState(() {
-        _coverImageSizeCache[url] = (frame.image.width, frame.image.height);
-      });
-      frame.image.dispose();
-    } catch (_) {}
+      try {
+        if (!mounted) return;
+        setState(() {
+          _coverImageSizeCache[url] = (frame.image.width, frame.image.height);
+        });
+      } finally {
+        frame.image.dispose();
+      }
+    } catch (_) {
+    } finally {
+      codec?.dispose();
+    }
   }
 }

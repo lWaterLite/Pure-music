@@ -181,6 +181,10 @@ Future<void> _runApplication() async {
   await ImmersiveModeController.instance.init();
   if (WindowLifecycleService.instance.isExiting) return;
 
+  if (AppSettings.instance.appWindowTransparent) {
+    await windowManager.setBackgroundColor(Colors.transparent);
+  }
+
   MemoryMonitorService.instance.start();
 
   runApp(Entry(welcome: welcome));

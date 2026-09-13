@@ -426,7 +426,8 @@ class _UniDetailPageState<P, S, T> extends State<UniDetailPage<P, S, T>> {
       listenable: AppSettings.backgroundNotifier,
       builder: (context, _) {
         final useAppBackground =
-            AppSettings.instance.appBackgroundImagePath != null;
+            AppSettings.instance.appBackgroundImagePath != null ||
+            AppSettings.instance.appWindowTransparent;
         return ColoredBox(
           color: useAppBackground
               ? scheme.surface.withValues(

@@ -33,6 +33,7 @@ import 'package:pure_music/page/settings_page/settings_group_entry.dart';
 import 'package:pure_music/page/settings_page/hotkey_settings.dart'
     show HotkeySettingsPanel, GlobalHotkeySettingsPanel;
 import 'package:pure_music/page/settings_page/lastfm_settings.dart';
+import 'package:pure_music/page/settings_page/backup_settings.dart';
 import 'package:pure_music/page/settings_page/other_settings.dart'
     show AudioEchoLogRecordControl, ReplayGainControl, TransitionControl;
 import 'package:pure_music/native/rust/api/utils.dart' as rust_utils;
@@ -150,7 +151,7 @@ class _AppearanceTabContent extends StatelessWidget {
         _GroupEntry(
           icon: Symbols.wallpaper,
           title: '应用背景',
-          subtitle: '背景图片、强度与模糊',
+          subtitle: '窗口透明、背景图片、强度与模糊',
           groupId: 'appearance-background',
         ),
         SizedBox(height: 8.0),
@@ -277,6 +278,28 @@ class _AppBackgroundControlState extends State<_AppBackgroundControl> {
   bool _updating = false;
   double? _opacityBeforeDrag;
   double? _blurBeforeDrag;
+  double? _windowOpacityBeforeDrag;
+  double? _windowBlurBeforeDrag;
+
+  Future<void> _setTransparent(bool value) async {
+    if (_updating) return;
+    setState(() => _updating = true);
+    final previousTransparent = settings.appWindowTransparent;
+    try {
+      settings.appWindowTransparent = value;
+      AppSettings.backgroundNotifier.rebuild();
+      if (!await settings.saveSettings()) {
+        settings.appWindowTransparent = previousTransparent;
+        AppSettings.backgroundNotifier.rebuild();
+        if (mounted) {
+          setState(() {});
+          showTextOnSnackBar('透明窗口设置保存失败', variant: ToastVariant.error);
+        }
+      }
+    } finally {
+      if (mounted) setState(() => _updating = false);
+    }
+  }
 
   Future<void> _pickImage() async {
     if (_updating) return;
@@ -291,12 +314,12 @@ class _AppBackgroundControlState extends State<_AppBackgroundControl> {
           : result.files.single.path;
       if (selectedPath == null || !mounted) return;
 
-      final previous = settings.appBackgroundImagePath;
+      final previousPath = settings.appBackgroundImagePath;
       settings.appBackgroundImagePath = selectedPath;
       AppSettings.backgroundNotifier.rebuild();
       setState(() {});
       if (!await settings.saveSettings()) {
-        settings.appBackgroundImagePath = previous;
+        settings.appBackgroundImagePath = previousPath;
         AppSettings.backgroundNotifier.rebuild();
         if (mounted) {
           setState(() {});
@@ -375,11 +398,78 @@ class _AppBackgroundControlState extends State<_AppBackgroundControl> {
     }
   }
 
+  void _setWindowOpacity(double value) {
+    if (_updating) return;
+    _windowOpacityBeforeDrag ??= settings.appWindowOpacity;
+    setState(() => settings.appWindowOpacity = value);
+    AppSettings.backgroundNotifier.rebuild();
+  }
+
+  Future<void> _saveWindowOpacity(double value) async {
+    final previous = _windowOpacityBeforeDrag;
+    _windowOpacityBeforeDrag = null;
+    if (previous == null) return;
+    setState(() => _updating = true);
+    try {
+      if (await settings.saveSettings()) return;
+      settings.appWindowOpacity = previous;
+      AppSettings.backgroundNotifier.rebuild();
+      if (mounted) {
+        setState(() {});
+        showTextOnSnackBar('透明度保存失败', variant: ToastVariant.error);
+      }
+    } finally {
+      if (mounted) setState(() => _updating = false);
+    }
+  }
+
+  void _setWindowBlur(double value) {
+    if (_updating) return;
+    _windowBlurBeforeDrag ??= settings.appWindowBlur;
+    setState(() => settings.appWindowBlur = value);
+    AppSettings.backgroundNotifier.rebuild();
+  }
+
+  Future<void> _saveWindowBlur(double value) async {
+    final previous = _windowBlurBeforeDrag;
+    _windowBlurBeforeDrag = null;
+    if (previous == null) return;
+    setState(() => _updating = true);
+    try {
+      if (await settings.saveSettings()) return;
+      settings.appWindowBlur = previous;
+      AppSettings.backgroundNotifier.rebuild();
+      if (mounted) {
+        setState(() {});
+        showTextOnSnackBar('模糊度保存失败', variant: ToastVariant.error);
+      }
+    } finally {
+      if (mounted) setState(() => _updating = false);
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     final imagePath = settings.appBackgroundImagePath;
+    final transparent = settings.appWindowTransparent;
     return Column(
       children: [
+        SettingsTile(
+          description: '窗口背景',
+          subtitle: transparent ? '透明' : '不透明',
+          action: SegmentedButton<bool>(
+            showSelectedIcon: false,
+            segments: const [
+              ButtonSegment(value: false, label: Text('不透明')),
+              ButtonSegment(value: true, label: Text('透明')),
+            ],
+            selected: {transparent},
+            onSelectionChanged: _updating
+                ? null
+                : (selected) => _setTransparent(selected.first),
+          ),
+        ),
+        const SizedBox(height: 16),
         SettingsTile(
           description: '背景图片',
           subtitle: imagePath == null ? '未设置，使用主题背景' : path.basename(imagePath),
@@ -388,7 +478,7 @@ class _AppBackgroundControlState extends State<_AppBackgroundControl> {
             children: [
               IconButton(
                 tooltip: '选择背景图片',
-                onPressed: _updating ? null : _pickImage,
+                onPressed: _updating || transparent ? null : _pickImage,
                 icon: _updating
                     ? const SizedBox.square(
                         dimension: 20,
@@ -398,13 +488,55 @@ class _AppBackgroundControlState extends State<_AppBackgroundControl> {
               ),
               IconButton(
                 tooltip: '恢复默认背景',
-                onPressed: imagePath == null || _updating ? null : _clearImage,
+                onPressed: imagePath == null || _updating || transparent
+                    ? null
+                    : _clearImage,
                 icon: const Icon(Symbols.restart_alt),
               ),
             ],
           ),
         ),
-        if (imagePath != null) ...[
+        if (transparent) ...[
+          const SizedBox(height: 16),
+          SettingsTile(
+            description: '透明度',
+            subtitle: '${(settings.appWindowOpacity * 100).round()}%',
+            action: SizedBox(
+              width: 160,
+              child: Slider(
+                value: settings.appWindowOpacity,
+                min: 0.1,
+                max: 1.0,
+                divisions: 18,
+                label: '${(settings.appWindowOpacity * 100).round()}%',
+                onChanged: _updating ? null : _setWindowOpacity,
+                onChangeEnd: _updating ? null : _saveWindowOpacity,
+              ),
+            ),
+          ),
+          const SizedBox(height: 16),
+          SettingsTile(
+            description: '模糊度',
+            subtitle: settings.appWindowBlur == 0
+                ? '不模糊'
+                : '${settings.appWindowBlur.round()}',
+            action: SizedBox(
+              width: 160,
+              child: Slider(
+                value: settings.appWindowBlur,
+                min: 0,
+                max: 30,
+                divisions: 15,
+                label: settings.appWindowBlur == 0
+                    ? '不模糊'
+                    : '${settings.appWindowBlur.round()}',
+                onChanged: _updating ? null : _setWindowBlur,
+                onChangeEnd: _updating ? null : _saveWindowBlur,
+              ),
+            ),
+          ),
+        ],
+        if (imagePath != null && !transparent) ...[
           const SizedBox(height: 16),
           SettingsTile(
             description: '背景强度',
@@ -1545,6 +1677,8 @@ class _PlaybackTabContent extends StatelessWidget {
           groupId: 'playback-behavior',
         ),
         SizedBox(height: 8.0),
+        _SettingsSectionHeader('第三方服务'),
+        SizedBox(height: 4.0),
         _GroupEntry(
           icon: Symbols.graphic_eq,
           title: 'Last.fm',
@@ -2228,6 +2362,13 @@ class _AdvancedTabContent extends StatelessWidget {
           title: '字体',
           subtitle: '界面与歌词字体',
           groupId: 'advanced-font',
+        ),
+        SizedBox(height: 8.0),
+        _GroupEntry(
+          icon: Symbols.backup,
+          title: '备份',
+          subtitle: '导出与导入用户数据',
+          groupId: 'advanced-backup',
         ),
       ],
     );
@@ -3269,7 +3410,7 @@ const _settingsGroups = <String, _SettingsGroupDesc>{
   ),
   'appearance-background': _SettingsGroupDesc(
     '应用背景',
-    '背景图片、强度与模糊',
+    '窗口透明、背景图片、强度与模糊',
     _AppearanceBackgroundGroup(),
   ),
   'appearance-list': _SettingsGroupDesc(
@@ -3345,6 +3486,11 @@ const _settingsGroups = <String, _SettingsGroupDesc>{
     _AdvancedLibraryGroup(),
   ),
   'advanced-font': _SettingsGroupDesc('字体', '界面与歌词字体', _AdvancedFontGroup()),
+  'advanced-backup': _SettingsGroupDesc(
+    '备份',
+    '导出与导入用户数据',
+    _AdvancedBackupGroup(),
+  ),
 };
 
 /// 把桌面歌词配置同步到桌面歌词窗口
@@ -4635,6 +4781,22 @@ class _AdvancedFontGroup extends StatelessWidget {
         _SettingsSectionHeader('字体'),
         SizedBox(height: 4.0),
         SelectFontCombobox(),
+      ],
+    );
+  }
+}
+
+class _AdvancedBackupGroup extends StatelessWidget {
+  const _AdvancedBackupGroup();
+
+  @override
+  Widget build(BuildContext context) {
+    return ListView(
+      padding: const EdgeInsets.only(bottom: 96.0, right: 20),
+      children: const [
+        _SettingsSectionHeader('备份'),
+        SizedBox(height: 4.0),
+        BackupSettingsPanel(),
       ],
     );
   }
