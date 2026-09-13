@@ -1,7 +1,7 @@
 name: pure_music
 description: Material You 风格的本地音乐播放器
 publish_to: none
-version: 2.2.4
+version: 2.2.5
 
 environment:
   sdk: ">=3.10.3 <4.0.0"
@@ -13,6 +13,7 @@ dependencies:
   flutter_localizations:
     sdk: flutter
 
+  archive: ^3.6.1
   convert: ^3.1.2
   crypto: ^3.0.7
   desktop_lyric:
