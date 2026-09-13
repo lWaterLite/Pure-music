@@ -384,6 +384,31 @@ class Lrc extends Lyric {
     r'[\u4e00-\u9fff\u3040-\u309f\u30a0-\u30ff\u1100-\u11ff\u3130-\u318f\uac00-\ud7af]',
   ).hasMatch(text);
 
+  static bool _hasKana(String text) =>
+      RegExp(r'[\u3040-\u309f\u30a0-\u30ff]').hasMatch(text);
+
+  static bool _hasCyrillic(String text) =>
+      RegExp(r'[\u0400-\u04ff]').hasMatch(text);
+
+  static bool _looksLikeAnnotation(String text) {
+    final stripped = text.replaceAll(RegExp(r'<[^>]*>'), '').trim();
+    if (stripped.isEmpty) return false;
+    if (RegExp(r'[a-zA-Z]+[1-6]').hasMatch(stripped)) return true;
+    final words = stripped
+        .split(RegExp(r'\s+'))
+        .where((word) => word.isNotEmpty)
+        .toList();
+    return words.length >= 2 && _isRomanizationStatic(stripped);
+  }
+
+  static bool _isAnnotationTrack(String primaryText, String text) {
+    if (RegExp(r'[a-zA-Z]+[1-6]').hasMatch(text)) return true;
+    if (!_hasAsianChars(primaryText) && !_hasCyrillic(primaryText)) {
+      return false;
+    }
+    return _isRomanizationStatic(text);
+  }
+
   /// 在同一时间戳的歌词行组中，智能选择最佳的主歌词行（原文）。
   ///
   /// 优先级（从高到低）：
@@ -453,6 +478,9 @@ class Lrc extends Lyric {
     final alphaCount = RegExp(r'[a-zA-Z]').allMatches(stripped).length;
 
     if (alphaCount == 0) return false;
+
+    // 带调号的拼音、粤拼按注音处理。
+    if (RegExp(r'[a-zA-Z]+[1-6]').hasMatch(stripped)) return true;
 
     // 有假名、汉字或韩文 → 不是罗马音
     if (cjkCount > 0 || kanaCount > 0 || hangulCount > 0) return false;
@@ -1509,9 +1537,21 @@ class Lrc extends Lyric {
 
     if (rawLines.isEmpty && metadataLines.isEmpty) return null;
 
-    bool hasTimedContent(String raw) => wordTagRe
-        .allMatches(raw)
-        .any((match) => (match.group(2) ?? '').trim().isNotEmpty);
+    String lyricText(String raw) {
+      final part = separator == null ? raw : raw.split(separator).first;
+      return part.replaceAll(RegExp(r'<[^>]*>'), '').trim();
+    }
+
+    bool hasTimedContent(String raw) {
+      final matches = wordTagRe.allMatches(raw).toList(growable: false);
+      if (matches.isEmpty) return false;
+      if (matches.any((match) => (match.group(2) ?? '').trim().isNotEmpty)) {
+        return true;
+      }
+
+      // 行首文本加行尾时间标签也是有效的逐字时间轴。
+      return raw.substring(0, matches.first.start).trim().isNotEmpty;
+    }
 
     ({int start, int end})? timedContentRange(String raw) {
       final matches = wordTagRe.allMatches(raw).toList(growable: false);
@@ -1609,6 +1649,126 @@ class Lrc extends Lyric {
       }
     }
 
+    const kOriginal = 0;
+    const kTranslation = 1;
+    const kRomanization = 2;
+
+    int samplePrimaryIndex(List<String> contents) {
+      final timedIndices = <int>[];
+      for (int i = 0; i < contents.length; i++) {
+        if (hasTimedContent(contents[i])) timedIndices.add(i);
+      }
+      if (timedIndices.length == 1) return timedIndices.single;
+
+      // 同组通常按主歌词、翻译、注音的顺序保存；首行明显是注音时，
+      // 优先选择同组中的非注音行。
+      if (_looksLikeAnnotation(lyricText(contents.first))) {
+        for (int i = 1; i < contents.length; i++) {
+          if (!_looksLikeAnnotation(lyricText(contents[i]))) return i;
+        }
+      }
+
+      // 日文假名和西里尔文字比纯汉字更能说明原文所在的轴。
+      final kanaIndices = <int>[];
+      final cyrillicIndices = <int>[];
+      for (int i = 0; i < contents.length; i++) {
+        final text = lyricText(contents[i]);
+        if (_hasKana(text)) kanaIndices.add(i);
+        if (_hasCyrillic(text)) cyrillicIndices.add(i);
+      }
+      if (kanaIndices.length == 1) return kanaIndices.single;
+      if (cyrillicIndices.length == 1) return cyrillicIndices.single;
+
+      // 没有更强证据时按行序处理：同组第一行是主歌词。
+      return 0;
+    }
+
+    // 从整首歌的 2/3 行组中均匀抽取代表行，避免单个分组决定整首歌的角色。
+    final sampleGroups = <int, List<List<String>>>{};
+    for (final entry in groupedMap.entries) {
+      final size = entry.value.length;
+      if (size == 2 || size == 3) {
+        sampleGroups.putIfAbsent(size, () => []).add(entry.value);
+      }
+    }
+
+    final roleVotes = <int, Map<int, Map<int, int>>>{};
+    void addRoleVote(int size, int position, int role, int weight) {
+      roleVotes
+          .putIfAbsent(size, () => {})
+          .putIfAbsent(position, () => {})
+          .update(role, (value) => value + weight, ifAbsent: () => weight);
+    }
+
+    for (final entry in sampleGroups.entries) {
+      final groups = entry.value;
+      final sampleCount = min(groups.length, 12);
+      final sampledIndices = <int>[];
+      for (int i = 0; i < sampleCount; i++) {
+        final index = sampleCount == 1
+            ? 0
+            : ((i * (groups.length - 1)) / (sampleCount - 1)).round();
+        if (!sampledIndices.contains(index)) sampledIndices.add(index);
+      }
+
+      for (final index in sampledIndices) {
+        final contents = groups[index];
+        final timedCount = contents.where(hasTimedContent).length;
+        if (timedCount == 0) continue;
+
+        final primaryIndex = samplePrimaryIndex(contents);
+        // 唯一带逐字时间轴的行是强证据；多行都带时间轴时只作为弱证据，
+        // 让多个时间轴行共同决定位置映射。
+        final weight = timedCount == 1 ? 3 : 1;
+        for (int i = 0; i < contents.length; i++) {
+          final role = i == primaryIndex
+              ? kOriginal
+              : (_isAnnotationTrack(
+                      lyricText(contents[primaryIndex]),
+                      lyricText(contents[i]),
+                    )
+                    ? kRomanization
+                    : kTranslation);
+          addRoleVote(entry.key, i, role, weight);
+        }
+      }
+    }
+
+    final roleMap = <int, Map<int, int>>{};
+    for (final entry in roleVotes.entries) {
+      final votes = entry.value;
+      final originalPositions = votes.entries
+          .where((item) => (item.value[kOriginal] ?? 0) > 0)
+          .toList();
+      originalPositions.sort(
+        (a, b) => (b.value[kOriginal] ?? 0).compareTo(a.value[kOriginal] ?? 0),
+      );
+      final bestOriginal = originalPositions.isEmpty
+          ? null
+          : originalPositions.first;
+      final secondOriginalVotes = originalPositions.length > 1
+          ? (originalPositions[1].value[kOriginal] ?? 0)
+          : 0;
+      if (bestOriginal == null ||
+          (bestOriginal.value[kOriginal] ?? 0) <= secondOriginalVotes) {
+        continue;
+      }
+
+      final map = <int, int>{bestOriginal.key: kOriginal};
+      votes.forEach((position, counts) {
+        if (position == bestOriginal.key) return;
+        final translationVotes = counts[kTranslation] ?? 0;
+        final romanizationVotes = counts[kRomanization] ?? 0;
+        if (translationVotes > romanizationVotes && translationVotes > 0) {
+          map[position] = kTranslation;
+        } else if (romanizationVotes > translationVotes &&
+            romanizationVotes > 0) {
+          map[position] = kRomanization;
+        }
+      });
+      roleMap[entry.key] = map;
+    }
+
     final parsedLines = <EnhancedLrcLine>[];
     final explicitLineEndMsByStart = <Duration, int>{};
     Duration? firstLyricLineStart;
@@ -1644,7 +1804,24 @@ class Lrc extends Lyric {
             }
           }
         }
-        return false;
+        if (tagMatches.isEmpty) return false;
+
+        // 行首文本后只有行尾时间标签时，也属于带逐字时间的原文行。
+        final prefix = raw.substring(0, tagMatches.first.start);
+        return prefix.trim().isNotEmpty;
+      }
+
+      final learnedRoles = roleMap[contents.length];
+      int? learnedPrimaryIndex;
+      if (learnedRoles != null) {
+        for (final role in learnedRoles.entries) {
+          if (role.value == kOriginal &&
+              role.key >= 0 &&
+              role.key < contents.length) {
+            learnedPrimaryIndex = role.key;
+            break;
+          }
+        }
       }
 
       final contentsWithTags = <String>[];
@@ -1675,7 +1852,28 @@ class Lrc extends Lyric {
       String primaryRaw;
       int? primaryIndex; // null = primary 不在 otherContents 中
 
-      if (contentsWithTags.isNotEmpty) {
+      if (learnedPrimaryIndex != null) {
+        primaryRaw = contents[learnedPrimaryIndex];
+        primaryIndex = null;
+        romanContents.clear();
+        otherContents.clear();
+        for (int i = 0; i < contents.length; i++) {
+          if (i == learnedPrimaryIndex) continue;
+          final text = lyricText(contents[i]);
+          if (text.isEmpty) continue;
+          final learnedRole = learnedRoles?[i];
+          if (learnedRole == kRomanization ||
+              (learnedRole == null &&
+                  _isAnnotationTrack(
+                    lyricText(contents[learnedPrimaryIndex]),
+                    text,
+                  ))) {
+            romanContents.add(contents[i]);
+          } else {
+            otherContents.add(contents[i]);
+          }
+        }
+      } else if (contentsWithTags.isNotEmpty) {
         // 选逐词标签最多的行作为原文。
         // 解决元数据行（如 "Adam Levine："）被 50ms 容差和实际歌词分到同一组时抢主位的问题。
         // 实际歌词的逐词标签数远多于元数据行。
@@ -1778,6 +1976,14 @@ class Lrc extends Lyric {
       final words = <EnhancedLrcWord>[];
       bool hasWordTimestamps = false;
       int? explicitLineEndMs;
+
+      final firstWordTag = wordTagRe.firstMatch(primaryText);
+      if (firstWordTag != null) {
+        final prefix = primaryText.substring(0, firstWordTag.start);
+        if (prefix.trim().isNotEmpty) {
+          words.add(EnhancedLrcWord(start, Duration.zero, prefix));
+        }
+      }
 
       for (final w in wordTagRe.allMatches(primaryText)) {
         final timeStr = w.group(1);

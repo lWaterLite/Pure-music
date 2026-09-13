@@ -3,6 +3,22 @@ import 'package:pure_music/lyric/lrc.dart';
 import 'package:pure_music/lyric/lyric.dart';
 
 void main() {
+  test('enhanced LRC preserves text before the first word timestamp', () {
+    final lyric = Lrc.fromLrcTextAuto(
+      '[00:00.000]打<00:00.330>歌<00:00.660>妹<00:00.990>（DJ）'
+      '<00:01.320>-<00:01.980>林',
+      LyricFormat.local,
+      separator: '┃',
+    )!;
+    final line = lyric.lines.whereType<SyncLyricLine>().singleWhere(
+      (line) => line.words.isNotEmpty,
+    );
+
+    expect(line.words.map((word) => word.content).join(), '打歌妹（DJ）-林');
+    expect(line.words.first.start, Duration.zero);
+    expect(line.words.first.length, const Duration(milliseconds: 330));
+  });
+
   test('enhanced LRC keeps an explicit single-word end timestamp', () {
     final lyric = Lrc.fromLrcTextAuto(
       '[00:31.519] <00:31.519>Check<00:31.830>\n'
@@ -17,6 +33,54 @@ void main() {
 
     expect(line.words, hasLength(1));
     expect(line.words.single.length, const Duration(milliseconds: 311));
+  });
+
+  test('enhanced LRC keeps a delayed first word as the original line', () {
+    final lyric = Lrc.fromLrcTextAuto(
+      '[01:09.916]Constantly<01:11.488>\n'
+      '[01:09.916]重复不断\n'
+      '[01:11.488]Boy <01:11.686>you <01:11.878>play '
+      '<01:12.370>through <01:12.609>my <01:12.842>mind '
+      '<01:15.537>\n'
+      '[01:11.488]男孩 你像一首交响曲一样萦绕在我的脑海里',
+      LyricFormat.local,
+      separator: '┃',
+    )!;
+    final line = lyric.lines.whereType<SyncLyricLine>().singleWhere(
+      (line) =>
+          line.start == const Duration(milliseconds: 69916) &&
+          line.words.isNotEmpty,
+    );
+
+    expect(line.content, 'Constantly');
+    expect(line.translation, '重复不断');
+    expect(line.romanLyric, isNull);
+  });
+
+  test('enhanced LRC learns roles when supplemental lines are also timed', () {
+    final lyric = Lrc.fromLrcTextAuto(
+      '[00:10.000]Hello<00:10.500>\n'
+      '[00:10.000]你好\n'
+      '[00:20.000]World<00:20.500>\n'
+      '[00:20.000]再<00:20.200>见<00:20.500>\n'
+      '[00:30.000]歌詞<00:30.500>\n'
+      '[00:30.000]翻<00:30.150>译<00:30.300>文本<00:30.500>\n'
+      '[00:30.000]ka<00:30.150>na<00:30.500>',
+      LyricFormat.local,
+      separator: '┃',
+    )!;
+    final lines = lyric.lines
+        .whereType<SyncLyricLine>()
+        .where((line) => line.words.isNotEmpty)
+        .toList();
+
+    expect(lines, hasLength(3));
+    expect(lines[1].content, 'World');
+    expect(lines[1].translation, '再见');
+    expect(lines[1].romanLyric, isNull);
+    expect(lines[2].content, '歌詞');
+    expect(lines[2].translation, '翻译文本');
+    expect(lines[2].romanLyric, 'kana');
   });
 
   test('enhanced LRC uses the first meaningful word for the opening interlude', () {

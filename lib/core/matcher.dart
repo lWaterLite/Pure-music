@@ -17,6 +17,7 @@ import 'package:pure_music/core/utils.dart' as utils;
 import 'package:pure_music/lyric/lyric_stripper.dart';
 import 'package:pure_music/lyric/exclude_data.dart';
 import 'package:pure_music/core/settings.dart';
+import 'package:pure_music/core/lyric_match_scoring.dart';
 
 final logger = utils.logger;
 
@@ -750,17 +751,16 @@ bool _isVersionDurationCompatible(Audio audio, SongSearchResult result) {
 }
 
 bool _isCompatibleAggregateMatch(Audio audio, SongSearchResult result) {
-  final audioTitle = _normalizeExactMatchText(audio.title);
   final titleQuality = _titleMatchQuality(audio.title, result.title);
-  if (audioTitle.isEmpty || titleQuality == 0) {
+  if (_normalizeExactMatchText(audio.title).isEmpty || titleQuality == 0) {
     return false;
   }
 
   if (titleQuality == 1 && !_isVersionDurationCompatible(audio, result)) {
     return false;
   }
-  final artistQuality = _artistMatchQuality(audio.artist, result.artists);
-  if (artistQuality > 0) return true;
+  final match = _scoreMatch(audio, result);
+  if (match.isReliable) return true;
 
   // 精确标题且时长高度一致时，允许来源的歌手字段缺失或写法异常。
   return titleQuality == 2 && _durationMatchQuality(audio, result) >= 3;
@@ -799,9 +799,8 @@ int _compareMatchCandidates(
     audio,
     b,
   ).compareTo(_durationMatchQuality(audio, a));
-  return durationQualityComparison != 0
-      ? durationQualityComparison
-      : b.score.compareTo(a.score);
+  if (durationQualityComparison != 0) return durationQualityComparison;
+  return b.score.compareTo(a.score);
 }
 
 int _durationMatchQuality(Audio audio, SongSearchResult result) {
@@ -823,80 +822,30 @@ double _computeScore(
   String album, {
   int? duration,
 }) {
-  double score = 0.0;
+  if (title.trim().isEmpty || audio.title.trim().isEmpty) return -1.0;
+  return scoreLyricMatch(
+    title: audio.title,
+    artist: audio.artist,
+    album: audio.album,
+    candidateTitle: title,
+    candidateArtist: artists,
+    candidateAlbum: album,
+    audioDurationSeconds: audio.duration,
+    candidateDurationSeconds: duration,
+  ).score;
+}
 
-  // 时长差异过大 → 不奖励时长分（但仍保留标题/歌手匹配的可能，Acoustic/Remix 版本时长常不同）
-  if (duration != null && audio.duration > 0) {
-    final diff = (duration - audio.duration).abs();
-    if (diff <= 3) {
-      score += 30; // 3 秒内高度匹配
-    } else if (diff <= 10) {
-      score += 15; // 10 秒内基本匹配
-    } else if (diff <= 30) {
-      score += 5;
-    }
-    // diff > 30：不加分也不排除（可能是不同版本/remix/acoustic）
-  }
-
-  final normalizedAudioTitle = audio.title.toLowerCase();
-  final normalizedAudioArtist = audio.artist.toLowerCase();
-  final normalizedTitle = title.toLowerCase();
-  final normalizedArtists = artists.toLowerCase();
-
-  if (normalizedTitle.isEmpty) return -1.0;
-  if (normalizedAudioTitle.isEmpty) return -1.0;
-
-  final strippedAudio = _stripNonVersionTitleSuffixes(normalizedAudioTitle);
-  final strippedResult = _stripNonVersionTitleSuffixes(normalizedTitle);
-
-  // 用剥离后的标题做精确匹配
-  if (strippedResult == strippedAudio) {
-    score += 40;
-  } else if (normalizedAudioTitle.contains(normalizedTitle) ||
-      normalizedTitle.contains(normalizedAudioTitle)) {
-    score += 25;
-  } else {
-    int matchCount = 0;
-    for (
-      int i = 0;
-      i < min(normalizedTitle.length, normalizedAudioTitle.length);
-      i++
-    ) {
-      if (normalizedTitle[i] == normalizedAudioTitle[i]) {
-        matchCount++;
-      }
-    }
-    score +=
-        30.0 *
-        matchCount /
-        max(normalizedTitle.length, normalizedAudioTitle.length);
-  }
-
-  if (normalizedArtists.isNotEmpty && normalizedAudioArtist.isNotEmpty) {
-    if (normalizedArtists == normalizedAudioArtist) {
-      score += 30;
-    } else if (normalizedAudioArtist.contains(normalizedArtists) ||
-        normalizedArtists.contains(normalizedAudioArtist)) {
-      score += 15;
-    } else {
-      int matchCount = 0;
-      for (
-        int i = 0;
-        i < min(normalizedArtists.length, normalizedAudioArtist.length);
-        i++
-      ) {
-        if (normalizedArtists[i] == normalizedAudioArtist[i]) {
-          matchCount++;
-        }
-      }
-      score +=
-          10.0 *
-          matchCount /
-          max(normalizedArtists.length, normalizedAudioArtist.length);
-    }
-  }
-
-  return score;
+LyricMatchScore _scoreMatch(Audio audio, SongSearchResult result) {
+  return scoreLyricMatch(
+    title: audio.title,
+    artist: audio.artist,
+    album: audio.album,
+    candidateTitle: result.title,
+    candidateArtist: result.artists,
+    candidateAlbum: result.album,
+    audioDurationSeconds: audio.duration,
+    candidateDurationSeconds: result.duration,
+  );
 }
 
 class SongSearchResult {
