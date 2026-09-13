@@ -1,5 +1,7 @@
 import 'dart:async';
 
+import 'package:pure_music/component/motion.dart';
+import 'package:pure_music/component/search_dialog.dart';
 import 'package:pure_music/core/design_tokens.dart';
 import 'package:pure_music/core/enums.dart';
 import 'package:pure_music/core/route_visibility.dart';
@@ -19,35 +21,51 @@ class HorizontalLyricView extends StatelessWidget {
   Widget build(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
 
-    return DecoratedBox(
-      decoration: BoxDecoration(
-        color: scheme.secondaryContainer,
-        borderRadius: AppRadius.mdCircular,
-      ),
-      child: ListenableBuilder(
-        listenable: Listenable.merge([
-          PlayService.instance.lyricService,
-          LyricViewController.instance,
-        ]),
-        builder: (context, _) => FutureBuilder(
-          key: ValueKey(PlayService.instance.lyricService.currLyricFuture),
-          future: PlayService.instance.lyricService.currLyricFuture,
-          builder: (context, snapshot) {
-            if (snapshot.data == null) {
-              return Padding(
-                padding: const EdgeInsets.symmetric(horizontal: 16.0),
-                child: Align(
-                  alignment: Alignment.centerLeft,
-                  child: Text(
-                    '快来播放音乐吧~',
-                    style: TextStyle(color: scheme.onSecondaryContainer),
+    return Tooltip(
+      message: '点我唤起搜索',
+      child: InteractiveSurfaceMotion(
+        child: GestureDetector(
+          behavior: HitTestBehavior.opaque,
+          onTapUp: (_) => SearchDialog.show(context),
+          child: MouseRegion(
+            cursor: SystemMouseCursors.click,
+            child: DecoratedBox(
+              decoration: BoxDecoration(
+                color: scheme.secondaryContainer,
+                borderRadius: AppRadius.mdCircular,
+              ),
+              child: ListenableBuilder(
+                listenable: Listenable.merge([
+                  PlayService.instance.lyricService,
+                  LyricViewController.instance,
+                ]),
+                builder: (context, _) => FutureBuilder(
+                  key: ValueKey(
+                    PlayService.instance.lyricService.currLyricFuture,
                   ),
-                ),
-              );
-            }
+                  future: PlayService.instance.lyricService.currLyricFuture,
+                  builder: (context, snapshot) {
+                    if (snapshot.data == null) {
+                      return Padding(
+                        padding: const EdgeInsets.symmetric(horizontal: 16.0),
+                        child: Align(
+                          alignment: Alignment.centerLeft,
+                          child: Text(
+                            '快来播放音乐吧~',
+                            style: TextStyle(
+                              color: scheme.onSecondaryContainer,
+                            ),
+                          ),
+                        ),
+                      );
+                    }
 
-            return _LyricHorizontalScrollArea(snapshot.data!, compact);
-          },
+                    return _LyricHorizontalScrollArea(snapshot.data!, compact);
+                  },
+                ),
+              ),
+            ),
+          ),
         ),
       ),
     );
