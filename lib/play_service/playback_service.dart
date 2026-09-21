@@ -15,11 +15,13 @@ import 'package:pure_music/native/bass/bass_player.dart';
 import 'package:pure_music/native/rust/api/smtc_flutter.dart';
 import 'package:pure_music/native/rust/api/tag_reader.dart' as rust_tag_reader;
 import 'package:pure_music/native/rust/api/library_db.dart' as rust_library_db;
+import 'package:pure_music/core/sleep_blocker.dart';
 import 'package:pure_music/core/utils.dart';
 import 'package:pure_music/core/theme.dart';
 import 'package:pure_music/core/settings.dart';
 import 'package:pure_music/services/lastfm/lastfm_models.dart';
 import 'package:pure_music/services/lastfm/lastfm_service.dart';
+import 'package:pure_music/play_service/sleep_timer.dart';
 import 'package:flutter/foundation.dart';
 
 final class _PendingGaplessTransition {
@@ -107,6 +109,21 @@ class PlaybackService extends ChangeNotifier {
         );
       }
       _playerState.value = event;
+      if (event == PlayerState.playing) {
+        SleepBlocker.instance.setPlayerPlaying(true);
+        SleepBlocker.instance.reevaluate();
+      } else if (event == PlayerState.completed) {
+        SleepTimerService.instance.onSongCompleted();
+      } else if (event == PlayerState.paused) {
+        SleepBlocker.instance.setPlayerPlaying(false);
+        SleepBlocker.instance.reevaluate();
+        if (SleepTimerService.instance.isExtending) {
+          SleepTimerService.instance.onManualPause();
+        }
+      } else if (event == PlayerState.stopped) {
+        SleepBlocker.instance.setPlayerPlaying(false);
+        SleepBlocker.instance.reevaluate();
+      }
       _notifyPositionSync();
       _syncSmtcPositionTimer();
       if (event == PlayerState.completed && shouldAutoAdvance) {
@@ -163,6 +180,11 @@ class PlaybackService extends ChangeNotifier {
       prepareFallback: _prepareSmartFallback,
       prepareAfterCompletion: _rebuildGaplessPreparation,
     );
+
+    SleepTimerService.instance.setOnExpired(pause);
+    SleepTimerService.instance.setOnManualPauseWhileExtending(() {
+      showTextOnSnackBar('睡眠定时已取消', variant: ToastVariant.info);
+    });
 
     Future.microtask(() async {
       try {
@@ -894,6 +916,7 @@ class PlaybackService extends ChangeNotifier {
 
     _playlistIndex = audioIndex;
     _nowPlaying.value = audio;
+    SleepTimerService.instance.onSongChanged(audio.path);
     _lastNowPlayingChangedMs = DateTime.now().millisecondsSinceEpoch;
     _resetListenAccumulator(audio.duration.toDouble());
     unawaited(audio.loadSmallCoverBytes());
@@ -1002,6 +1025,21 @@ class PlaybackService extends ChangeNotifier {
     unawaited(_smtc.updateState(SMTCState.paused));
     notifyListeners();
     showTextOnSnackBar(message, variant: ToastVariant.error);
+  }
+
+  void refreshNowPlayingArtwork() {
+    if (_closed) return;
+    final audio = nowPlaying;
+    if (audio == null) return;
+    unawaited(
+      _smtc.updateDisplay(
+        title: audio.title,
+        artist: audio.artist,
+        album: audio.album,
+        duration: audio.duration * 1000,
+        path: audio.path,
+      ),
+    );
   }
 
   bool _isCurrentSongChangeTask(int token, Audio audio) {
@@ -1642,6 +1680,8 @@ class PlaybackService extends ChangeNotifier {
 
   Future<void> close() async {
     _closed = true;
+    SleepBlocker.instance.unblock();
+    SleepTimerService.instance.cancel();
     _songChangeTaskToken++;
     _cancelSongChangeTasks();
     _cancelPositionSyncBurst();

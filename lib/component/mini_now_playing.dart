@@ -25,6 +25,7 @@ class MiniNowPlaying extends StatefulWidget {
 class _MiniNowPlayingState extends State<MiniNowPlaying> {
   /// 拖拽进度条时整个卡片平滑放大，松开后缩小回原样。
   bool _dragActive = false;
+  double? _dragPreviewFraction;
 
   @override
   Widget build(BuildContext context) {
@@ -77,7 +78,14 @@ class _MiniNowPlayingState extends State<MiniNowPlaying> {
                                 setState(() => _dragActive = active);
                               }
                             },
-                            child: const _NowPlayingForeground(),
+                            onDragPreview: (fraction) {
+                              if (!mounted) return;
+                              if (_dragPreviewFraction == fraction) return;
+                              setState(() => _dragPreviewFraction = fraction);
+                            },
+                            child: _NowPlayingForeground(
+                              dragPreviewFraction: _dragPreviewFraction,
+                            ),
                           );
                         },
                       ),
@@ -94,7 +102,9 @@ class _MiniNowPlayingState extends State<MiniNowPlaying> {
 }
 
 class _NowPlayingForeground extends StatefulWidget {
-  const _NowPlayingForeground();
+  const _NowPlayingForeground({this.dragPreviewFraction});
+
+  final double? dragPreviewFraction;
 
   @override
   State<_NowPlayingForeground> createState() => _NowPlayingForegroundState();
@@ -188,7 +198,36 @@ class _NowPlayingForegroundState extends State<_NowPlayingForeground> {
                       final showTransportControls = constraints.maxWidth > 520;
                       final showPlaybackMode = constraints.maxWidth > 568;
                       final hideControls = !_controlsVisible;
+                      final reduceMotion = MediaQuery.disableAnimationsOf(
+                        context,
+                      );
                       final hasNowPlaying = nowPlaying != null;
+                      Widget secondaryMotion(Widget child) {
+                        return IgnorePointer(
+                          ignoring: hideControls,
+                          child: ExcludeSemantics(
+                            excluding: hideControls,
+                            child: AnimatedSlide(
+                              duration: reduceMotion
+                                  ? Duration.zero
+                                  : MotionDuration.fast,
+                              curve: MotionCurve.standard,
+                              offset: hideControls
+                                  ? const Offset(0.02, 0.0)
+                                  : Offset.zero,
+                              child: AnimatedOpacity(
+                                duration: reduceMotion
+                                    ? Duration.zero
+                                    : MotionDuration.fast,
+                                curve: MotionCurve.standard,
+                                opacity: hideControls ? 0.0 : 1.0,
+                                child: child,
+                              ),
+                            ),
+                          ),
+                        );
+                      }
+
                       final controls = Row(
                         mainAxisSize: MainAxisSize.min,
                         children: [
@@ -230,7 +269,10 @@ class _NowPlayingForegroundState extends State<_NowPlayingForeground> {
                             ),
                           if (showTransportControls) const SizedBox(width: 8.0),
                           if (showTransportControls)
-                            _MiniTimeText(color: scheme.onSecondaryContainer),
+                            _MiniTimeText(
+                              color: scheme.onSecondaryContainer,
+                              dragPreviewFraction: widget.dragPreviewFraction,
+                            ),
                         ],
                       );
                       return Row(
@@ -290,22 +332,7 @@ class _NowPlayingForegroundState extends State<_NowPlayingForeground> {
                             ),
                           ),
                           const SizedBox(width: 8.0),
-                          IgnorePointer(
-                            ignoring: hideControls,
-                            child: AnimatedSlide(
-                              duration: MotionDuration.fast,
-                              curve: MotionCurve.standard,
-                              offset: hideControls
-                                  ? const Offset(0.02, 0.0)
-                                  : Offset.zero,
-                              child: AnimatedOpacity(
-                                duration: MotionDuration.fast,
-                                curve: MotionCurve.standard,
-                                opacity: hideControls ? 0.0 : 1.0,
-                                child: controls,
-                              ),
-                            ),
-                          ),
+                          secondaryMotion(controls),
                         ],
                       );
                     },
@@ -470,9 +497,10 @@ class _AnimatedPlayPauseIconButtonState
 }
 
 class _MiniTimeText extends StatefulWidget {
-  const _MiniTimeText({required this.color});
+  const _MiniTimeText({required this.color, this.dragPreviewFraction});
 
   final Color color;
+  final double? dragPreviewFraction;
 
   @override
   State<_MiniTimeText> createState() => _MiniTimeTextState();
@@ -509,6 +537,7 @@ class _MiniTimeTextState extends State<_MiniTimeText> {
       return;
     }
     _positionTimer ??= Timer.periodic(const Duration(seconds: 1), (_) {
+      if (widget.dragPreviewFraction != null) return;
       final elapsedSinceNative = _clock.elapsedMilliseconds - _lastNativeSyncMs;
       if (elapsedSinceNative >= _nativeSyncInterval.inMilliseconds) {
         _syncNativePosition();
@@ -519,23 +548,32 @@ class _MiniTimeTextState extends State<_MiniTimeText> {
   }
 
   void _syncNativePosition() {
+    if (widget.dragPreviewFraction != null) return;
     _syncedPositionSeconds = playbackService.position.floor();
     _lastNativeSyncMs = _clock.elapsedMilliseconds;
     _emitLocalPosition(forceLength: true);
   }
 
   void _emitLocalPosition({bool forceLength = false}) {
-    final isPlaying =
-        playbackService.playerStateNotifier.value == PlayerState.playing;
-    final elapsedSeconds = isPlaying
-        ? ((_clock.elapsedMilliseconds - _lastNativeSyncMs) / 1000).floor()
-        : 0;
     final nextLengthSeconds = playbackService.length.floor();
-    final nextSeconds = nextLengthSeconds > 0
-        ? (_syncedPositionSeconds + elapsedSeconds)
-              .clamp(0, nextLengthSeconds)
-              .toInt()
-        : _syncedPositionSeconds + elapsedSeconds;
+    late final int nextSeconds;
+    final preview = widget.dragPreviewFraction;
+    if (preview != null) {
+      nextSeconds = nextLengthSeconds > 0
+          ? (preview * nextLengthSeconds).floor().clamp(0, nextLengthSeconds)
+          : 0;
+    } else {
+      final isPlaying =
+          playbackService.playerStateNotifier.value == PlayerState.playing;
+      final elapsedSeconds = isPlaying
+          ? ((_clock.elapsedMilliseconds - _lastNativeSyncMs) / 1000).floor()
+          : 0;
+      nextSeconds = nextLengthSeconds > 0
+          ? (_syncedPositionSeconds + elapsedSeconds)
+                .clamp(0, nextLengthSeconds)
+                .toInt()
+          : _syncedPositionSeconds + elapsedSeconds;
+    }
     if (nextSeconds == _positionSeconds &&
         (!forceLength || nextLengthSeconds == _lengthSeconds)) {
       return;
@@ -553,6 +591,14 @@ class _MiniTimeTextState extends State<_MiniTimeText> {
 
   void _onNowPlayingChanged() {
     _syncNativePosition();
+  }
+
+  @override
+  void didUpdateWidget(covariant _MiniTimeText oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.dragPreviewFraction != widget.dragPreviewFraction) {
+      _emitLocalPosition();
+    }
   }
 
   @override

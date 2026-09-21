@@ -315,6 +315,7 @@ class AppSettings {
   bool enableStackedScrollEffect = true;
   bool enableContentTransitionMotion = true;
   bool enableInteractiveSurfaceMotion = true;
+  bool enableCoverPointerSheen = true;
   bool enableDetailHeaderCollapseMotion = true;
   bool enableDataTransitionMotion = true;
   bool alwaysShowNowPlayingControls = true;
@@ -332,9 +333,13 @@ class AppSettings {
   Size windowSize = const Size(1280, 756);
   bool isWindowMaximized = false;
   WindowCloseBehavior windowCloseBehavior = WindowCloseBehavior.exit;
+  bool preventSleepOnNowPlaying = false;
 
   String? fontFamily;
   String? fontPath;
+  bool lyricFontFollowsUi = true;
+  String? lyricFontFamily;
+  String? lyricFontPath;
 
   late String artistSplitPattern = artistSeparator.join('|');
   RegExp? _cachedArtistSplitRegex;
@@ -389,6 +394,10 @@ class AppSettings {
     );
     _instance.enableInteractiveSurfaceMotion = normalizedBoolSetting(
       settingsMap['EnableInteractiveSurfaceMotion'],
+      defaultValue: stackedScrollEffect,
+    );
+    _instance.enableCoverPointerSheen = normalizedBoolSetting(
+      settingsMap['EnableCoverPointerSheen'],
       defaultValue: stackedScrollEffect,
     );
     _instance.enableDetailHeaderCollapseMotion = normalizedBoolSetting(
@@ -487,6 +496,10 @@ class AppSettings {
           WindowCloseBehavior.values,
         ) ??
         WindowCloseBehavior.exit;
+    _instance.preventSleepOnNowPlaying = normalizedBoolSetting(
+      settingsMap['PreventSleepOnNowPlaying'],
+      defaultValue: false,
+    );
   }
 
   @visibleForTesting
@@ -516,6 +529,10 @@ class AppSettings {
     );
     _instance.enableInteractiveSurfaceMotion = normalizedBoolSetting(
       settingsMap['EnableInteractiveSurfaceMotion'],
+      defaultValue: stackedScrollEffect,
+    );
+    _instance.enableCoverPointerSheen = normalizedBoolSetting(
+      settingsMap['EnableCoverPointerSheen'],
       defaultValue: stackedScrollEffect,
     );
     _instance.enableDetailHeaderCollapseMotion = normalizedBoolSetting(
@@ -773,6 +790,10 @@ class AppSettings {
           WindowCloseBehavior.values,
         ) ??
         WindowCloseBehavior.exit;
+    _instance.preventSleepOnNowPlaying = normalizedBoolSetting(
+      settingsMap['PreventSleepOnNowPlaying'],
+      defaultValue: false,
+    );
 
     final sdlr = settingsMap['ShowDesktopLyricRoman'];
     if (sdlr != null) {
@@ -988,6 +1009,29 @@ class AppSettings {
         _instance.fontPath = fontPath;
       }
     }
+
+    final lff = settingsMap['LyricFontFamily'];
+    final lfp = settingsMap['LyricFontPath'];
+    if (lff != null || lfp != null) {
+      final fontFamily = normalizedStringSetting(lff);
+      final fontPath = normalizedPathSetting(lfp);
+      if (fontFamily == null || fontPath == null) {
+        _instance.lyricFontFamily = null;
+        _instance.lyricFontPath = null;
+      } else {
+        _instance.lyricFontFamily = fontFamily;
+        _instance.lyricFontPath = fontPath;
+      }
+    }
+
+    if (settingsMap.containsKey('LyricFontFollowsUi')) {
+      _instance.lyricFontFollowsUi = normalizedBoolSetting(
+        settingsMap['LyricFontFollowsUi'],
+        defaultValue: true,
+      );
+    } else {
+      _instance.lyricFontFollowsUi = _instance.lyricFontFamily == null;
+    }
   }
 
   static Future<void> readFromJson() async {
@@ -1015,6 +1059,7 @@ class AppSettings {
         'EnableStackedScrollEffect': enableStackedScrollEffect,
         'EnableContentTransitionMotion': enableContentTransitionMotion,
         'EnableInteractiveSurfaceMotion': enableInteractiveSurfaceMotion,
+        'EnableCoverPointerSheen': enableCoverPointerSheen,
         'EnableDetailHeaderCollapseMotion': enableDetailHeaderCollapseMotion,
         'EnableDataTransitionMotion': enableDataTransitionMotion,
         'AlwaysShowNowPlayingControls': alwaysShowNowPlayingControls,
@@ -1085,6 +1130,10 @@ class AppSettings {
         'WindowCloseBehavior': windowCloseBehavior.name,
         'FontFamily': fontFamily,
         'FontPath': fontPath,
+        'LyricFontFollowsUi': lyricFontFollowsUi,
+        'LyricFontFamily': lyricFontFamily,
+        'LyricFontPath': lyricFontPath,
+        'PreventSleepOnNowPlaying': preventSleepOnNowPlaying,
       };
 
       Size sizeToSave = windowSize;

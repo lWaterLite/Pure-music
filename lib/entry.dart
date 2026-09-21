@@ -44,6 +44,7 @@ import 'package:pure_music/core/design_tokens.dart';
 import 'package:pure_music/core/theme.dart';
 import 'package:pure_music/core/update_checker.dart';
 import 'package:pure_music/core/utils.dart';
+import 'package:pure_music/core/window_render_gate.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_localizations/flutter_localizations.dart';
 import 'package:go_router/go_router.dart';
@@ -196,6 +197,8 @@ class _EntryState extends State<Entry>
       );
       // 任务栏缩略图自定义封面（主窗口已创建完成）
       TaskbarThumbnailService.instance.init();
+      // 预编译播放页背景 shader，避免首次进入时卡顿。
+      NowPlayingPage.precacheBackgrounds();
       // 启动后延迟检查更新
       _autoCheckUpdate();
     });
@@ -239,8 +242,8 @@ class _EntryState extends State<Entry>
 
   @override
   void onWindowMinimize() {
-    MemoryMonitorService.instance.trimAll();
-    logger.i('[mem] window minimized - cleared invisible caches');
+    MemoryMonitorService.instance.trimTrayHidden();
+    logger.i('[mem] window minimized - trimmed invisible caches');
     PlayService.existingPlaybackService?.startSmtcKeepAlive();
   }
 
@@ -541,10 +544,16 @@ class _EntryState extends State<Entry>
             builder: (context, child) => ValueListenableBuilder<bool>(
               valueListenable: _windowResizing,
               child: child,
-              builder: (context, resizing, child) => TickerMode(
-                enabled: !resizing,
-                child: child ?? const SizedBox.shrink(),
-              ),
+              builder: (context, resizing, child) =>
+                  ValueListenableBuilder<bool>(
+                    valueListenable: WindowRenderGate.instance.framesEnabled,
+                    child: child,
+                    builder: (context, windowFramesEnabled, child) =>
+                        TickerMode(
+                          enabled: !resizing && windowFramesEnabled,
+                          child: child ?? const SizedBox.shrink(),
+                        ),
+                  ),
             ),
             theme: fromSchemeAndFontFamily(
               fontFamily: theme.fontFamily,
@@ -772,32 +781,39 @@ class _EntryState extends State<Entry>
       /// now playing page
       GoRoute(
         path: app_paths.NOW_PLAYING_PAGE,
-        pageBuilder: (context, state) => CustomTransitionPage(
-          key: state.pageKey,
-          maintainState: false,
-          transitionDuration: MotionDuration.medium,
-          reverseTransitionDuration: MotionDuration.medium,
-          transitionsBuilder: (context, animation, _, child) {
-            if (MediaQuery.disableAnimationsOf(context)) {
-              return child;
-            }
-            final curved = CurvedAnimation(
-              parent: animation,
-              curve: Curves.easeOutCubic,
-              reverseCurve: Curves.easeInCubic,
-            );
-            final slide = Tween<Offset>(
-              begin: const Offset(0.0, 0.06),
-              end: Offset.zero,
-            ).animate(curved);
-            final fade = Tween<double>(begin: 0.0, end: 1.0).animate(curved);
-            return FadeTransition(
-              opacity: fade,
-              child: SlideTransition(position: slide, child: child),
-            );
-          },
-          child: const NowPlayingPage(),
-        ),
+        pageBuilder: (context, state) {
+          final motionEnabled =
+              AppSettings.instance.enableContentTransitionMotion &&
+              !MediaQuery.disableAnimationsOf(context);
+          return CustomTransitionPage(
+            key: state.pageKey,
+            maintainState: false,
+            transitionDuration: motionEnabled
+                ? MotionDuration.medium
+                : Duration.zero,
+            reverseTransitionDuration: motionEnabled
+                ? MotionDuration.medium
+                : Duration.zero,
+            transitionsBuilder: (context, animation, _, child) {
+              if (!motionEnabled) return child;
+              final curved = CurvedAnimation(
+                parent: animation,
+                curve: Curves.easeOutCubic,
+                reverseCurve: Curves.easeInCubic,
+              );
+              final slide = Tween<Offset>(
+                begin: const Offset(0.0, 0.06),
+                end: Offset.zero,
+              ).animate(curved);
+              final fade = Tween<double>(begin: 0.0, end: 1.0).animate(curved);
+              return FadeTransition(
+                opacity: fade,
+                child: SlideTransition(position: slide, child: child),
+              );
+            },
+            child: const NowPlayingPage(),
+          );
+        },
       ),
 
       /// welcoming page
