@@ -344,6 +344,15 @@ int _normalizedNonNegativeInt(Object? value) {
   return number < 0 ? 0 : number;
 }
 
+Set<int> _normalizedNonNegativeIntSet(Object? value) {
+  if (value is! Iterable) return <int>{};
+  return value
+      .map(_normalizedInteger)
+      .whereType<int>()
+      .where((item) => item >= 0)
+      .toSet();
+}
+
 int _normalizedBoundedInt(
   Object? value, {
   required int defaultValue,
@@ -594,7 +603,7 @@ class PlaybackPreference {
   bool lastShuffleActive;
   List<String> lastOriginalPlaylistPaths;
   bool reinitOnSetSource;
-  bool replayGainEnabled;
+  ReplayGainMode replayGainMode;
   TransitionMode transitionMode;
   int transitionFadeOutMs;
   int transitionFadeInMs;
@@ -607,7 +616,7 @@ class PlaybackPreference {
     this.eqBandModelVersion = currentEqBandModelVersion,
     this.eqEnabled = true,
     this.audioDspSettings = const AudioDspSettings(),
-    this.replayGainEnabled = false,
+    this.replayGainMode = ReplayGainMode.off,
     this.eqPreampDb = 0.0,
     this.eqAutoGainEnabled = true,
     this.eqAutoHeadroomDb = 1.0,
@@ -639,7 +648,7 @@ class PlaybackPreference {
     'lastShuffleActive': lastShuffleActive,
     'lastOriginalPlaylistPaths': lastOriginalPlaylistPaths,
     'reinitOnSetSource': reinitOnSetSource,
-    'replayGainEnabled': replayGainEnabled,
+    'replayGainMode': replayGainMode.name,
     'transitionMode': transitionMode.name,
     'transitionFadeOutMs': transitionFadeOutMs,
     'transitionFadeInMs': transitionFadeInMs,
@@ -696,10 +705,11 @@ class PlaybackPreference {
         map['reinitOnSetSource'],
         defaultValue: false,
       ),
-      replayGainEnabled: _normalizedBool(
-        map['replayGainEnabled'],
-        defaultValue: false,
-      ),
+      replayGainMode:
+          ReplayGainMode.fromString(map['replayGainMode']?.toString() ?? '') ??
+          (_normalizedBool(map['replayGainEnabled'], defaultValue: false)
+              ? ReplayGainMode.track
+              : ReplayGainMode.off),
       transitionMode: _transitionModeFromStored(map),
       transitionFadeOutMs: _normalizedBoundedInt(
         map['transitionFadeOutMs'],
@@ -715,6 +725,8 @@ class PlaybackPreference {
       ),
     );
   }
+
+  bool get replayGainEnabled => replayGainMode != ReplayGainMode.off;
 }
 
 class AppPreference {
@@ -768,6 +780,16 @@ class AppPreference {
     ContentView.list,
   );
 
+  var playlistGroupsPagePref = PagePreference(
+    0,
+    SortOrder.ascending,
+    ContentView.list,
+  );
+
+  Set<int> collapsedPlaylistGroupIds = <int>{};
+  bool playlistUngroupedCollapsed = false;
+  int playlistUngroupedSortOrder = 0;
+
   var playlistDetailPagePref = PagePreference(
     0,
     SortOrder.ascending,
@@ -801,7 +823,7 @@ class AppPreference {
 
   String customCpFeedbackKey = '';
   String updateRepoSlug = defaultUpdateRepoSlug;
-  bool autoCheckUpdate = true;
+  bool autoCheckUpdate = false;
   String? lastUpdateCheckTime;
   String? lastSeenUpdateTag;
   List<String> updateCheckUrls = List.of(defaultUpdateCheckUrls);
@@ -847,6 +869,19 @@ class AppPreference {
       prefMap['folderDetailPagePref'],
     );
     playlistsPagePref = PagePreference.fromMap(prefMap['playlistsPagePref']);
+    playlistGroupsPagePref = PagePreference.fromMap(
+      prefMap['playlistGroupsPagePref'],
+    );
+    collapsedPlaylistGroupIds = _normalizedNonNegativeIntSet(
+      prefMap['collapsedPlaylistGroupIds'],
+    );
+    playlistUngroupedCollapsed = _normalizedBool(
+      prefMap['playlistUngroupedCollapsed'],
+      defaultValue: false,
+    );
+    playlistUngroupedSortOrder = _normalizedNonNegativeInt(
+      prefMap['playlistUngroupedSortOrder'],
+    );
     playlistDetailPagePref = PagePreference.fromMap(
       prefMap['playlistDetailPagePref'],
     );
@@ -893,7 +928,7 @@ class AppPreference {
     );
     autoCheckUpdate = _normalizedBool(
       prefMap['autoCheckUpdate'],
-      defaultValue: true,
+      defaultValue: false,
     );
     lastUpdateCheckTime = _normalizedNullableString(
       prefMap['lastUpdateCheckTime'],
@@ -934,6 +969,10 @@ class AppPreference {
         'foldersPagePref': foldersPagePref.toMap(),
         'folderDetailPagePref': folderDetailPagePref.toMap(),
         'playlistsPagePref': playlistsPagePref.toMap(),
+        'playlistGroupsPagePref': playlistGroupsPagePref.toMap(),
+        'collapsedPlaylistGroupIds': collapsedPlaylistGroupIds.toList()..sort(),
+        'playlistUngroupedCollapsed': playlistUngroupedCollapsed,
+        'playlistUngroupedSortOrder': playlistUngroupedSortOrder,
         'playlistDetailPagePref': playlistDetailPagePref.toMap(),
         'startPage': startPage,
         'sidebarExpanded': sidebarExpanded,
@@ -953,7 +992,7 @@ class AppPreference {
         'folderAliases': folderAliases,
       });
 
-      final prefJson = json.encode(prefMap);
+      final prefJson = const JsonEncoder.withIndent('  ').convert(prefMap);
       await writeTextFileAtomically(appPreferencePath, prefJson);
       return true;
     } catch (err, trace) {
@@ -970,7 +1009,9 @@ class AppPreference {
         'playback_pref.json',
       );
 
-      final prefJson = json.encode(playbackPref.toMap());
+      final prefJson = const JsonEncoder.withIndent(
+        '  ',
+      ).convert(playbackPref.toMap());
       await writeTextFileAtomically(playbackPrefPath, prefJson);
       return true;
     } catch (err, trace) {

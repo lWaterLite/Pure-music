@@ -1,5 +1,6 @@
 import 'dart:convert';
 import 'dart:io';
+import 'package:pure_music/core/global_hotkey_binding.dart';
 import 'package:pure_music/core/hotkey_binding.dart';
 import 'package:pure_music/core/setting_action_state.dart';
 import 'package:pure_music/native/rust/api/system_theme.dart';
@@ -242,7 +243,7 @@ class AppSettings {
   static final listMotionNotifier = RebuildNotifier();
   static const String version = String.fromEnvironment(
     'APP_VERSION',
-    defaultValue: '2.2.5',
+    defaultValue: '2.4.0',
   );
 
   static GitHub? _github;
@@ -316,10 +317,11 @@ class AppSettings {
   bool enableInteractiveSurfaceMotion = true;
   bool enableDetailHeaderCollapseMotion = true;
   bool enableDataTransitionMotion = true;
-  bool alwaysShowNowPlayingControls = false;
-  bool globalHotkeysEnabled = false;
+  bool alwaysShowNowPlayingControls = true;
+  bool enableConcertPage = true;
   Map<HotkeyAction, HotkeyBinding> inAppHotkeys = defaultInAppHotkeys();
-  Map<HotkeyAction, HotkeyBinding> globalHotkeys = defaultGlobalHotkeys();
+  Map<GlobalHotkeyAction, GlobalHotkeyBinding> globalHotkeys =
+      defaultGlobalHotkeyBindings();
   int? customCoverColor;
   String? appBackgroundImagePath;
   double appBackgroundImageOpacity = 0.22;
@@ -399,14 +401,16 @@ class AppSettings {
     );
     _instance.alwaysShowNowPlayingControls = normalizedBoolSetting(
       settingsMap['AlwaysShowNowPlayingControls'],
-      defaultValue: false,
+      defaultValue: true,
     );
-    _instance.globalHotkeysEnabled = normalizedBoolSetting(
-      settingsMap['GlobalHotkeysEnabled'],
-      defaultValue: false,
+    _instance.enableConcertPage = normalizedBoolSetting(
+      settingsMap['EnableConcertPage'],
+      defaultValue: true,
+    );
+    _instance.globalHotkeys = normalizedGlobalHotkeyBindings(
+      settingsMap['GlobalHotkeys'],
     );
     _instance.inAppHotkeys = decodeInAppHotkeys(settingsMap['InAppHotkeys']);
-    _instance.globalHotkeys = decodeGlobalHotkeys(settingsMap['GlobalHotkeys']);
     _instance.appBackgroundImagePath = normalizedPathSetting(
       settingsMap['AppBackgroundImagePath'],
     );
@@ -524,14 +528,15 @@ class AppSettings {
     );
     _instance.alwaysShowNowPlayingControls = normalizedBoolSetting(
       settingsMap['AlwaysShowNowPlayingControls'],
-      defaultValue: false,
+      defaultValue: true,
     );
-    _instance.globalHotkeysEnabled = normalizedBoolSetting(
-      settingsMap['GlobalHotkeysEnabled'],
-      defaultValue: false,
+    _instance.enableConcertPage = normalizedBoolSetting(
+      settingsMap['EnableConcertPage'],
+      defaultValue: true,
     );
-    _instance.inAppHotkeys = decodeInAppHotkeys(settingsMap['InAppHotkeys']);
-    _instance.globalHotkeys = decodeGlobalHotkeys(settingsMap['GlobalHotkeys']);
+    _instance.globalHotkeys = normalizedGlobalHotkeyBindings(
+      settingsMap['GlobalHotkeys'],
+    );
 
     final sep = settingsMap['ArtistSeparator'];
     if (sep != null) {
@@ -1013,11 +1018,12 @@ class AppSettings {
         'EnableDetailHeaderCollapseMotion': enableDetailHeaderCollapseMotion,
         'EnableDataTransitionMotion': enableDataTransitionMotion,
         'AlwaysShowNowPlayingControls': alwaysShowNowPlayingControls,
-        ...encodeHotkeySettings(
-          globalEnabled: globalHotkeysEnabled,
-          inApp: inAppHotkeys,
-          global: globalHotkeys,
-        ),
+        'EnableConcertPage': enableConcertPage,
+        'InAppHotkeys': {
+          for (final entry in inAppHotkeys.entries)
+            entry.key.name: entry.value.encode(),
+        },
+        'GlobalHotkeys': globalHotkeyBindingsToJson(globalHotkeys),
         'ArtistSeparator': artistSeparator,
         'LocalLyricFirst': localLyricFirst,
         'PreferredOnlineSource': preferredOnlineSource.name,
@@ -1098,7 +1104,9 @@ class AppSettings {
       settingsMap['WindowSize'] =
           '${sizeToSave.width.toStringAsFixed(1)},${sizeToSave.height.toStringAsFixed(1)}';
 
-      final settingsStr = json.encode(settingsMap);
+      final settingsStr = const JsonEncoder.withIndent(
+        '  ',
+      ).convert(settingsMap);
       final dir = await getSettingsDir();
       final settingsPath = path.join(dir.path, 'settings.json');
       await writeTextFileAtomically(settingsPath, settingsStr);

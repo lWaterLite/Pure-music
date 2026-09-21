@@ -4,6 +4,7 @@ import 'dart:typed_data';
 import 'package:pure_music/component/rectangle_progress_indicator.dart';
 import 'package:pure_music/component/responsive_builder.dart';
 import 'package:pure_music/component/motion.dart';
+import 'package:pure_music/component/now_playing_playback_mode_switch.dart';
 import 'package:pure_music/library/audio_library.dart';
 import 'package:pure_music/play_service/play_service.dart';
 import 'package:pure_music/native/bass/bass_player.dart';
@@ -184,13 +185,19 @@ class _NowPlayingForegroundState extends State<_NowPlayingForeground> {
 
                   return LayoutBuilder(
                     builder: (context, constraints) {
-                      final dense = constraints.maxWidth <= 520;
+                      final showTransportControls = constraints.maxWidth > 520;
+                      final showPlaybackMode = constraints.maxWidth > 568;
                       final hideControls = !_controlsVisible;
                       final hasNowPlaying = nowPlaying != null;
                       final controls = Row(
                         mainAxisSize: MainAxisSize.min,
                         children: [
-                          if (!dense)
+                          if (showPlaybackMode)
+                            NowPlayingPlaybackModeSwitch(
+                              color: scheme.onSecondaryContainer,
+                            ),
+                          if (showPlaybackMode) const SizedBox(width: 8.0),
+                          if (showTransportControls)
                             IconButton(
                               tooltip: hasNowPlaying ? '上一曲' : '暂无正在播放',
                               onPressed: hasNowPlaying
@@ -204,11 +211,11 @@ class _NowPlayingForegroundState extends State<_NowPlayingForeground> {
                               color: scheme.onSecondaryContainer,
                             ),
                           _MiniPlayPauseButton(
-                            dense: dense,
+                            dense: !showTransportControls,
                             onSecondaryContainer: scheme.onSecondaryContainer,
                             enabled: hasNowPlaying,
                           ),
-                          if (!dense)
+                          if (showTransportControls)
                             IconButton(
                               tooltip: hasNowPlaying ? '下一曲' : '暂无正在播放',
                               onPressed: hasNowPlaying
@@ -221,8 +228,8 @@ class _NowPlayingForegroundState extends State<_NowPlayingForeground> {
                               ),
                               color: scheme.onSecondaryContainer,
                             ),
-                          if (!dense) const SizedBox(width: 8.0),
-                          if (!dense)
+                          if (showTransportControls) const SizedBox(width: 8.0),
+                          if (showTransportControls)
                             _MiniTimeText(color: scheme.onSecondaryContainer),
                         ],
                       );

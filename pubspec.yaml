@@ -1,7 +1,7 @@
 name: pure_music
 description: Material You 风格的本地音乐播放器
 publish_to: none
-version: 2.2.5
+version: 2.4.5
 
 environment:
   sdk: ">=3.10.3 <4.0.0"
@@ -43,6 +43,10 @@ dependencies:
   window_manager: ^0.5.1
   xml: ^6.5.0
 
+dependency_overrides:
+  hotkey_manager_windows:
+    path: packages/hotkey_manager_windows
+
 dev_dependencies:
   flutter_lints: ^6.0.0
   flutter_test:
@@ -57,7 +61,6 @@ flutter:
     - app_icon.ico
   shaders:
     - assets/shaders/mesh_gradient_runtime.frag
-    - assets/shaders/pulse_gaussian.frag
     - assets/shaders/soft_mesh_gradient.frag
   fonts:
     - family: Pretendard Variable

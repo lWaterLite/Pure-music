@@ -1,5 +1,6 @@
 import 'package:pure_music/library/audio_library.dart';
 import 'package:pure_music/component/motion.dart';
+import 'package:pure_music/component/replay_gain_dialog.dart';
 import 'package:pure_music/component/scroll_aware_future_builder.dart';
 import 'package:pure_music/page/uni_page.dart';
 import 'package:pure_music/core/design_tokens.dart';
@@ -11,6 +12,8 @@ import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
 import 'package:material_symbols_icons/symbols.dart';
 import 'package:pure_music/core/paths.dart' as app_paths;
+import 'package:pure_music/native/rust/api/replay_gain.dart'
+    as rust_replay_gain;
 
 class AlbumTile extends StatefulWidget {
   const AlbumTile({
@@ -30,6 +33,7 @@ class AlbumTile extends StatefulWidget {
 
 class _AlbumTileState extends State<AlbumTile> {
   int get _coverSize => widget.view == ContentView.list ? 48 : 160;
+
   String get _currentCoverIdentity => '${widget.album.primaryPath}|$_coverSize';
 
   @override
@@ -91,6 +95,35 @@ class _AlbumTileState extends State<AlbumTile> {
         consumeOutsideTap: true,
         style: menuStyle,
         menuChildren: [
+          SubmenuButton(
+            style: menuItemStyle,
+            leadingIcon: const Icon(Symbols.sound_detection_glass_break),
+            menuChildren: [
+              MenuItemButton(
+                style: menuItemStyle,
+                onPressed: hasWorks
+                    ? () => showReplayGainWriteDialog(
+                        context: context,
+                        album: widget.album,
+                        mode: rust_replay_gain.ReplayGainScanMode.album,
+                      )
+                    : null,
+                child: const Text('专辑增益'),
+              ),
+              MenuItemButton(
+                style: menuItemStyle,
+                onPressed: hasWorks
+                    ? () => showReplayGainWriteDialog(
+                        context: context,
+                        album: widget.album,
+                        mode: rust_replay_gain.ReplayGainScanMode.track,
+                      )
+                    : null,
+                child: const Text('音轨增益'),
+              ),
+            ],
+            child: const Text('回放增益'),
+          ),
           MenuItemButton(
             style: menuItemStyle,
             onPressed: hasWorks

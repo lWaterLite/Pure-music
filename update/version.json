@@ -1,6 +1,6 @@
 {
-  "tag_name": "v2.2.5",
-  "name": "2.2.5",
-  "body": "## 更新日志 2.2.5\r\n\r\n**Last.fm**\r\n\r\n- 新增 Last.fm 收听记录提交，支持授权绑定、达标自动提交与离线补交\r\n- 设置页-播放 新增 Last.fm 授权面板，可管理绑定状态与 API 凭证\r\n\r\n**歌词**\r\n\r\n- 韩文歌词分组判定与可变字重回退，韩文排版更准确\r\n- 优化歌词滚动弹簧动画，更连贯\r\n- 尝试适配SPL格式\r\n- 优化原文/翻译/注音 分组判断\r\n\r\n**界面**\r\n\r\n- 支持透明背景\r\n- 页面切换动效改用统一常量，动效风格更一致\r\n- 点击顶部歌词栏可展开搜索\r\n\r\n**播放**\r\n\r\n- 保留内嵌封面原始格式，修复封面格式转换导致的显示异常\r\n- 修复 EQ、DSP 与输出模式切换问题\r\n\r\n**稳定性**\r\n\r\n- 新增用户数据备份与恢复功能，支持导出与导入\r\n- 修复依赖安全与日志安全问题",
-  "html_url": "https://github.com/qingyueyin/Pure-music/releases/tag/v2.2.5"
+  "tag_name": "v2.4.5",
+  "name": "v2.4.5",
+  "body": "## 更新内容\n\n请前往 GitHub Releases 查看完整更新日志",
+  "html_url": "https://github.com/qingyueyin/Pure-music/releases"
 }

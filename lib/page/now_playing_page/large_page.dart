@@ -128,7 +128,7 @@ class _NowPlayingLargePage extends StatelessWidget {
                         return Row(
                           mainAxisSize: MainAxisSize.min,
                           children: [
-                            const _NowPlayingPlaybackModeSwitch(),
+                            const NowPlayingPlaybackModeSwitch(),
                             spacer,
                             IconButton(
                               tooltip: hasNowPlaying ? '上一曲' : '暂无正在播放',

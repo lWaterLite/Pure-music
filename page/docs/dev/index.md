@@ -79,7 +79,7 @@ Flutter / Dart UI
 
 - 原文 - 翻译 - 罗马音分组
 - 音调调节
-- 封面取色的流动渐变 / 律动背景
+- 封面取色的流动渐变 / 流光背景
 - 其它已上线的特有能力（不确定就先问）
 
 ## 播放页性能硬约束（摘要）
@@ -98,6 +98,12 @@ Flutter / Dart UI
 | `CP_ECHO_RECORD` | `1` | 启动时开启音频回声日志记录 |
 | `CP_ECHO_LOG_DIR` | 目录 | 重定向回声日志目录（默认写入应用数据目录下的 `audio_echo_logs/`） |
 | `CP_MEMORY_LOG` | `1` | 内存监控输出统计日志 |
+
+## 测试页
+
+无 UI 入口，通过路由直接访问：
+
+- `/test/background` — 静态封面背景测试页（`lib/test/static_cover_background_test_page.dart`），生成渐变 / 色条 / 人脸三种测试图案，验证背景压暗参数。
 
 ## 下一步
 

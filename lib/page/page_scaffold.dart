@@ -14,12 +14,14 @@ class PageScaffold extends StatelessWidget {
     required this.title,
     this.subtitle,
     required this.actions,
+    this.actionRows,
     required this.body,
   });
 
   final String title;
   final String? subtitle;
   final List<Widget> actions;
+  final List<List<Widget>>? actionRows;
   final Widget body;
 
   @override
@@ -63,7 +65,7 @@ class PageScaffold extends StatelessWidget {
   }
 
   Widget _buildSmallLayout(ColorScheme scheme) {
-    if (actions.isEmpty) {
+    if (_hasNoActions) {
       return _titleWidget(scheme);
     }
     return Column(
@@ -72,13 +74,13 @@ class PageScaffold extends StatelessWidget {
       children: [
         _titleWidget(scheme),
         const SizedBox(height: 16.0),
-        Wrap(spacing: 8.0, runSpacing: 8.0, children: actions),
+        _buildSmallActions(),
       ],
     );
   }
 
   Widget _buildWideLayout(ColorScheme scheme) {
-    if (actions.isEmpty) {
+    if (_hasNoActions) {
       return _titleWidget(scheme);
     }
     return Row(
@@ -86,19 +88,65 @@ class PageScaffold extends StatelessWidget {
       children: [
         Expanded(child: _titleWidget(scheme)),
         const SizedBox(width: 16.0),
-        Flexible(
-          child: Align(
-            alignment: Alignment.centerRight,
-            child: Wrap(
-              alignment: WrapAlignment.end,
-              spacing: 8.0,
-              runSpacing: 8.0,
-              children: actions,
-            ),
-          ),
-        ),
+        _buildWideActions(),
       ],
     );
+  }
+
+  bool get _hasNoActions =>
+      actionRows?.every((row) => row.isEmpty) ?? actions.isEmpty;
+
+  Widget _buildSmallActions() {
+    final rows = actionRows;
+    if (rows == null) {
+      return Wrap(spacing: 8.0, runSpacing: 8.0, children: actions);
+    }
+    final nonEmptyRows = rows.where((row) => row.isNotEmpty).toList();
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        for (var i = 0; i < nonEmptyRows.length; i++) ...[
+          if (i > 0) const SizedBox(height: 8.0),
+          Wrap(spacing: 8.0, runSpacing: 8.0, children: nonEmptyRows[i]),
+        ],
+      ],
+    );
+  }
+
+  Widget _buildWideActions() {
+    final rows = actionRows;
+    if (rows == null) {
+      return Wrap(
+        alignment: WrapAlignment.end,
+        spacing: 8.0,
+        runSpacing: 8.0,
+        children: actions,
+      );
+    }
+    final nonEmptyRows = rows.where((row) => row.isNotEmpty).toList();
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.end,
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        for (var i = 0; i < nonEmptyRows.length; i++) ...[
+          if (i > 0) const SizedBox(height: 8.0),
+          Row(
+            mainAxisSize: MainAxisSize.min,
+            children: _withSpacing(nonEmptyRows[i]),
+          ),
+        ],
+      ],
+    );
+  }
+
+  List<Widget> _withSpacing(List<Widget> row) {
+    final result = <Widget>[];
+    for (var i = 0; i < row.length; i++) {
+      if (i > 0) result.add(const SizedBox(width: 8.0));
+      result.add(row[i]);
+    }
+    return result;
   }
 
   Widget _titleWidget(ColorScheme scheme) {

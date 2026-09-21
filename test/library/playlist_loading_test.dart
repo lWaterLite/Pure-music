@@ -53,7 +53,14 @@ void main() {
         CREATE TABLE playlists (
           id INTEGER PRIMARY KEY,
           name TEXT NOT NULL UNIQUE,
-          cover_source TEXT
+          cover_source TEXT,
+          group_id INTEGER,
+          sort_order INTEGER NOT NULL DEFAULT 0
+        );
+        CREATE TABLE playlist_groups (
+          id INTEGER PRIMARY KEY,
+          name TEXT NOT NULL UNIQUE,
+          sort_order INTEGER NOT NULL DEFAULT 0
         );
         CREATE TABLE playlist_items (
           playlist_id INTEGER NOT NULL,
@@ -61,8 +68,10 @@ void main() {
           sort_order INTEGER NOT NULL,
           added_at TEXT
         );
-        INSERT INTO playlists(id, name, cover_source)
-        VALUES (2, 'Beta', NULL), (1, 'Alpha', 'audio:cover');
+        INSERT INTO playlist_groups(id, name, sort_order)
+        VALUES (7, 'Favorites', 0);
+        INSERT INTO playlists(id, name, cover_source, group_id, sort_order)
+        VALUES (2, 'Beta', NULL, NULL, 1), (1, 'Alpha', 'audio:cover', 7, 0);
         INSERT INTO playlist_items(playlist_id, path, sort_order, added_at)
         VALUES
           (1, 'late.mp3', 1, '2026-01-02T00:00:00.000Z'),
@@ -75,11 +84,14 @@ void main() {
       expect(result.map((playlist) => playlist.name), ['Alpha', 'Beta']);
       expect(result.first.paths, ['early.mp3', 'late.mp3']);
       expect(result.first.coverSource, 'audio:cover');
+      expect(result.first.groupId, 7);
+      expect(result.first.sortOrder, 0);
       expect(
         result.first.addedAt('early.mp3'),
         DateTime.parse('2026-01-01T00:00:00.000Z'),
       );
       expect(result.last.paths, ['beta.mp3']);
+      expect(readPlaylistGroupsFromDatabase(database).single.name, 'Favorites');
       expect(() => result.add(Playlist('Gamma', const [])), returnsNormally);
     } finally {
       database.dispose();
@@ -93,7 +105,9 @@ void main() {
         CREATE TABLE playlists (
           id INTEGER PRIMARY KEY AUTOINCREMENT,
           name TEXT NOT NULL UNIQUE,
-          cover_source TEXT
+          cover_source TEXT,
+          group_id INTEGER,
+          sort_order INTEGER NOT NULL DEFAULT 0
         );
       ''');
 
@@ -108,6 +122,31 @@ void main() {
       expect(
         () => createPlaylistInDatabase(database, 'Favorites'),
         throwsA(isA<PlaylistAlreadyExistsException>()),
+      );
+    } finally {
+      database.dispose();
+    }
+  });
+
+  test('creates a persisted playlist group and rejects a duplicate name', () {
+    final database = sqlite3.openInMemory();
+    try {
+      database.execute('''
+        CREATE TABLE playlist_groups (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          name TEXT NOT NULL UNIQUE,
+          sort_order INTEGER NOT NULL DEFAULT 0
+        );
+      ''');
+
+      final created = createPlaylistGroupInDatabase(database, ' Favorites ');
+
+      expect(created.id, isNotNull);
+      expect(created.name, 'Favorites');
+      expect(created.sortOrder, 0);
+      expect(
+        () => createPlaylistGroupInDatabase(database, 'Favorites'),
+        throwsA(isA<PlaylistGroupAlreadyExistsException>()),
       );
     } finally {
       database.dispose();

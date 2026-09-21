@@ -154,6 +154,7 @@ Future<void> _runApplication() async {
     logger.i('[rs]: $msg');
   });
 
+  // For hot reload, `unregisterAll()` needs to be called.
   await HotkeysHelper.unregisterAll();
 
   final supportPath = (await getAppDataDir()).path;
@@ -167,6 +168,7 @@ Future<void> _runApplication() async {
     await AppPreference.read();
   }
   await HotkeysHelper.registerHotKeys();
+  await HotkeysHelper.registerGlobalHotkeys();
   await AlbumColorCache.instance.init();
 
   final welcome = !File(path.join(supportPath, 'index.json')).existsSync();

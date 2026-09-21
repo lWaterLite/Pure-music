@@ -91,7 +91,8 @@ CREATE TABLE IF NOT EXISTS album_colors (
           db.select('PRAGMA user_version').first['user_version'] as int;
       if (version < 1) {
         db.execute(
-            'ALTER TABLE playlist_items ADD COLUMN sort_order INTEGER NOT NULL DEFAULT 0');
+          'ALTER TABLE playlist_items ADD COLUMN sort_order INTEGER NOT NULL DEFAULT 0',
+        );
         db.execute('PRAGMA user_version = 1');
       }
       if (version < 2) {
@@ -107,6 +108,33 @@ CREATE TABLE IF NOT EXISTS album_colors (
       if (version < 4) {
         db.execute('ALTER TABLE playlist_items ADD COLUMN added_at TEXT');
         db.execute('PRAGMA user_version = 4');
+      }
+      if (version < 5) {
+        db.execute('''
+          CREATE TABLE IF NOT EXISTS playlist_groups (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT NOT NULL UNIQUE,
+            sort_order INTEGER NOT NULL DEFAULT 0
+          )
+        ''');
+        db.execute('ALTER TABLE playlists ADD COLUMN group_id INTEGER');
+        db.execute(
+          'ALTER TABLE playlists ADD COLUMN sort_order INTEGER NOT NULL DEFAULT 0',
+        );
+        final existing = db.select(
+          'SELECT id FROM playlists ORDER BY name COLLATE NOCASE, id',
+        );
+        for (var i = 0; i < existing.length; i++) {
+          db.execute('UPDATE playlists SET sort_order = ? WHERE id = ?', [
+            i,
+            existing[i]['id'],
+          ]);
+        }
+        db.execute(
+          'CREATE INDEX IF NOT EXISTS idx_playlists_group_sort '
+          'ON playlists(group_id, sort_order)',
+        );
+        db.execute('PRAGMA user_version = 5');
       }
       db.execute('COMMIT');
     } catch (e) {

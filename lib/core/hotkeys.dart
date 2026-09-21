@@ -1,3 +1,6 @@
+import 'dart:async';
+
+import 'package:pure_music/core/global_hotkey_binding.dart';
 import 'package:pure_music/core/hotkey_binding.dart';
 import 'package:pure_music/core/paths.dart' as app_paths;
 import 'package:pure_music/core/preference.dart';
@@ -13,11 +16,23 @@ import 'package:hotkey_manager/hotkey_manager.dart';
 import 'package:go_router/go_router.dart';
 import 'package:window_manager/window_manager.dart';
 
+class GlobalHotkeyUpdateResult {
+  const GlobalHotkeyUpdateResult._({this.error});
+
+  const GlobalHotkeyUpdateResult.success() : error = null;
+
+  final String? error;
+
+  bool get isSuccess => error == null;
+}
+
 class HotkeysHelper {
   static final List<HotKey> _inAppKeys = [];
-  static final List<HotKey> _systemKeys = [];
+  static final Map<GlobalHotkeyAction, HotKey> _globalHotkeys = {};
   static bool _windowToggleInProgress = false;
   static bool _inAppPaused = false;
+  static bool _recordingSuspended = false;
+  static bool _restoreInAppAfterRecording = false;
 
   static bool _canHandlePlaybackHotkey() => canHandleInAppPlaybackHotkey(
     textInputFocused: isTextInputFocusedForHotkeys(),
@@ -29,17 +44,22 @@ class HotkeysHelper {
 
   static Future<void> registerHotKeys() async {
     await _registerInApp();
-    await _registerSystem();
   }
 
   static Future<void> reload() async {
-    await unregisterAll();
+    await _unregisterInApp();
+    await unregisterGlobalHotkeys();
+    if (_recordingSuspended) return;
     await registerHotKeys();
+    await registerGlobalHotkeys();
   }
 
   static Future<void> unregisterAll() async {
-    await _unregisterInApp();
-    await _unregisterSystem();
+    await hotKeyManager.unregisterAll();
+    _inAppKeys.clear();
+    _globalHotkeys.clear();
+    _recordingSuspended = false;
+    _restoreInAppAfterRecording = false;
   }
 
   static Future<void> onFocusChanges(bool focus) async {
@@ -52,15 +72,11 @@ class HotkeysHelper {
   }
 
   static Future<void> pauseForRecording() async {
-    await _unregisterInApp();
-    await _unregisterSystem();
+    await suspendForHotkeyRecording();
   }
 
   static Future<void> resumeAfterRecording() async {
-    if (!_inAppPaused) {
-      await _registerInApp();
-    }
-    await _registerSystem();
+    await resumeAfterHotkeyRecording();
   }
 
   static Future<void> _registerInApp() async {
@@ -75,28 +91,9 @@ class HotkeysHelper {
       if (hotKey == null) continue;
       await hotKeyManager.register(
         hotKey,
-        keyDownHandler: (_) => _handle(action, isGlobal: false),
+        keyDownHandler: (_) => _handleInAppHotkey(action),
       );
       _inAppKeys.add(hotKey);
-    }
-  }
-
-  static Future<void> _registerSystem() async {
-    if (_systemKeys.isNotEmpty) return;
-    if (!AppSettings.instance.globalHotkeysEnabled) return;
-    final bindings = AppSettings.instance.globalHotkeys;
-    for (final action in globalHotkeyActions) {
-      final binding = bindings[action] ?? HotkeyBinding.unbound;
-      final hotKey = binding.toHotKey(
-        scope: HotKeyScope.system,
-        identifier: 'global.${action.name}',
-      );
-      if (hotKey == null) continue;
-      await hotKeyManager.register(
-        hotKey,
-        keyDownHandler: (_) => _handle(action, isGlobal: true),
-      );
-      _systemKeys.add(hotKey);
     }
   }
 
@@ -107,16 +104,16 @@ class HotkeysHelper {
     _inAppKeys.clear();
   }
 
-  static Future<void> _unregisterSystem() async {
-    for (final key in _systemKeys) {
-      await hotKeyManager.unregister(key);
+  static Future<void> unregisterGlobalHotkeys() async {
+    final hotkeys = _globalHotkeys.values.toList();
+    _globalHotkeys.clear();
+    for (final hotkey in hotkeys) {
+      await hotKeyManager.unregister(hotkey);
     }
-    _systemKeys.clear();
   }
 
-  static void _handle(HotkeyAction action, {required bool isGlobal}) {
-    if (!isGlobal &&
-        action != HotkeyAction.escape &&
+  static void _handleInAppHotkey(HotkeyAction action) {
+    if (action != HotkeyAction.escape &&
         action != HotkeyAction.fullscreen &&
         !_canHandlePlaybackHotkey()) {
       return;
@@ -133,11 +130,148 @@ class HotkeysHelper {
       case HotkeyAction.volumeDown:
         _changeVolume(-0.05);
       case HotkeyAction.immersive:
-        _toggleImmersive();
+        unawaited(_toggleImmersive());
       case HotkeyAction.fullscreen:
-        _toggleFullscreen();
+        unawaited(_toggleFullscreen());
       case HotkeyAction.escape:
-        _handleEscape();
+        unawaited(_handleEscape());
+    }
+  }
+
+  static Future<void> registerGlobalHotkeys() async {
+    if (_recordingSuspended) return;
+    await unregisterGlobalHotkeys();
+    for (final action in GlobalHotkeyAction.values) {
+      final binding = AppSettings.instance.globalHotkeys[action];
+      if (binding == null || !binding.isValid) continue;
+      try {
+        await _registerGlobalHotkey(action, binding);
+      } catch (err, trace) {
+        logger.e(
+          '全局快捷键注册失败：${action.storageKey}',
+          error: err,
+          stackTrace: trace,
+        );
+      }
+    }
+  }
+
+  static Future<void> suspendForHotkeyRecording() async {
+    if (_recordingSuspended) return;
+    _recordingSuspended = true;
+    _restoreInAppAfterRecording = _inAppKeys.isNotEmpty;
+    await _unregisterInApp();
+    await unregisterGlobalHotkeys();
+  }
+
+  static Future<void> resumeAfterHotkeyRecording() async {
+    if (!_recordingSuspended) return;
+    _recordingSuspended = false;
+    await registerGlobalHotkeys();
+    if (_restoreInAppAfterRecording && !_inAppPaused) {
+      await _registerInApp();
+    }
+    _restoreInAppAfterRecording = false;
+  }
+
+  static Future<GlobalHotkeyUpdateResult> updateGlobalHotkey(
+    GlobalHotkeyAction action,
+    GlobalHotkeyBinding binding,
+  ) async {
+    if (!binding.isValid) {
+      return const GlobalHotkeyUpdateResult._(
+        error: '快捷键必须包含 Ctrl、Alt 或 Shift，且只能有一个主键',
+      );
+    }
+    final settings = AppSettings.instance;
+    final previousBindings = Map<GlobalHotkeyAction, GlobalHotkeyBinding>.from(
+      settings.globalHotkeys,
+    );
+    if (previousBindings.entries.any(
+      (entry) =>
+          entry.key != action && entry.value.signature == binding.signature,
+    )) {
+      return const GlobalHotkeyUpdateResult._(error: '该快捷键已分配给其他操作');
+    }
+    if (previousBindings[action]?.signature == binding.signature) {
+      return const GlobalHotkeyUpdateResult.success();
+    }
+
+    final previousHotkey = _globalHotkeys.remove(action);
+    if (previousHotkey != null) {
+      await hotKeyManager.unregister(previousHotkey);
+    }
+    try {
+      await _registerGlobalHotkey(action, binding);
+    } catch (err, trace) {
+      logger.e('全局快捷键更新失败：${action.storageKey}', error: err, stackTrace: trace);
+      await _restoreGlobalHotkey(
+        action,
+        previousBindings[action],
+        previousHotkey,
+      );
+      return const GlobalHotkeyUpdateResult._(error: '该快捷键已被系统或其他程序占用');
+    }
+
+    settings.globalHotkeys = Map<GlobalHotkeyAction, GlobalHotkeyBinding>.from(
+      previousBindings,
+    )..[action] = binding;
+    if (await settings.saveSettings()) {
+      return const GlobalHotkeyUpdateResult.success();
+    }
+
+    settings.globalHotkeys = previousBindings;
+    final currentHotkey = _globalHotkeys.remove(action);
+    if (currentHotkey != null) {
+      await hotKeyManager.unregister(currentHotkey);
+    }
+    await _restoreGlobalHotkey(action, previousBindings[action], previousHotkey);
+    return const GlobalHotkeyUpdateResult._(error: '快捷键设置保存失败');
+  }
+
+  static Future<void> _restoreGlobalHotkey(
+    GlobalHotkeyAction action,
+    GlobalHotkeyBinding? binding,
+    HotKey? previousHotkey,
+  ) async {
+    if (binding == null || previousHotkey == null) return;
+    try {
+      await _registerGlobalHotkey(action, binding);
+    } catch (err, trace) {
+      logger.e(
+        '恢复原全局快捷键失败：${action.storageKey}',
+        error: err,
+        stackTrace: trace,
+      );
+    }
+  }
+
+  static Future<void> _registerGlobalHotkey(
+    GlobalHotkeyAction action,
+    GlobalHotkeyBinding binding,
+  ) async {
+    final hotkey = binding.toHotKey(action);
+    await hotKeyManager.register(
+      hotkey,
+      keyDownHandler: (_) => _handleGlobalHotkey(action),
+    );
+    _globalHotkeys[action] = hotkey;
+  }
+
+  static void _handleGlobalHotkey(GlobalHotkeyAction action) {
+    switch (action) {
+      case GlobalHotkeyAction.previousTrack:
+        _skipPrevious();
+      case GlobalHotkeyAction.nextTrack:
+        _skipNext();
+      case GlobalHotkeyAction.togglePlayback:
+        _togglePlayback();
+      case GlobalHotkeyAction.toggleDesktopLyric:
+        unawaited(_toggleDesktopLyric());
+      case GlobalHotkeyAction.volumeUp:
+        _changeVolume(0.05);
+      case GlobalHotkeyAction.volumeDown:
+        _changeVolume(-0.05);
     }
   }
 
@@ -183,6 +317,18 @@ class HotkeysHelper {
       text: '应用音量：${(next * 100).round()}%',
       icon: delta > 0 ? Icons.volume_up : Icons.volume_down,
     );
+  }
+
+  static Future<void> _toggleDesktopLyric() async {
+    final desktopLyric = PlayService.instance.desktopLyricService;
+    if (desktopLyric.isKilling) return;
+    if (desktopLyric.isRunning) {
+      await desktopLyric.killDesktopLyric();
+      showHotkeyToast(text: '关闭桌面歌词', icon: Icons.desktop_windows);
+    } else {
+      await desktopLyric.startDesktopLyric();
+      showHotkeyToast(text: '打开桌面歌词', icon: Icons.desktop_windows);
+    }
   }
 
   static Future<void> _toggleImmersive() async {
