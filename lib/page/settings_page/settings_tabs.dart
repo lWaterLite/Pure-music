@@ -35,7 +35,11 @@ import 'package:pure_music/page/settings_page/settings_group_entry.dart';
 import 'package:pure_music/page/settings_page/lastfm_settings.dart';
 import 'package:pure_music/page/settings_page/backup_settings.dart';
 import 'package:pure_music/page/settings_page/other_settings.dart'
-    show AudioEchoLogRecordControl, ReplayGainControl, TransitionControl;
+    show
+        AudioEchoLogRecordControl,
+        RememberPlaybackPositionControl,
+        ReplayGainControl,
+        TransitionControl;
 import 'package:pure_music/native/rust/api/utils.dart' as rust_utils;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -151,7 +155,7 @@ class _AppearanceTabContent extends StatelessWidget {
         _GroupEntry(
           icon: Symbols.wallpaper,
           title: '应用背景',
-          subtitle: '窗口透明、背景图片、强度与模糊',
+          subtitle: '窗口透明、背景图片、顶栏与侧栏材质',
           groupId: 'appearance-background',
         ),
         SizedBox(height: 8.0),
@@ -577,6 +581,76 @@ class _AppBackgroundControlState extends State<_AppBackgroundControl> {
           ),
         ],
       ],
+    );
+  }
+}
+
+enum _ChromeSurface { titleBar, sidebar }
+
+class _ChromeFrostedSwitch extends StatefulWidget {
+  const _ChromeFrostedSwitch({required this.surface});
+
+  final _ChromeSurface surface;
+
+  @override
+  State<_ChromeFrostedSwitch> createState() => _ChromeFrostedSwitchState();
+}
+
+class _ChromeFrostedSwitchState extends State<_ChromeFrostedSwitch> {
+  final settings = AppSettings.instance;
+  bool _updating = false;
+
+  bool get _value => switch (widget.surface) {
+    _ChromeSurface.titleBar => settings.enableTitleBarFrostedGlass,
+    _ChromeSurface.sidebar => settings.enableSidebarFrostedGlass,
+  };
+
+  String get _description => switch (widget.surface) {
+    _ChromeSurface.titleBar => '顶栏毛玻璃',
+    _ChromeSurface.sidebar => '侧栏毛玻璃',
+  };
+
+  String get _subtitle => switch (widget.surface) {
+    _ChromeSurface.titleBar => '关闭时使用 MD3 实心顶栏',
+    _ChromeSurface.sidebar => '关闭时使用 MD3 实心侧栏',
+  };
+
+  void _setValue(bool value) {
+    switch (widget.surface) {
+      case _ChromeSurface.titleBar:
+        settings.enableTitleBarFrostedGlass = value;
+      case _ChromeSurface.sidebar:
+        settings.enableSidebarFrostedGlass = value;
+    }
+  }
+
+  Future<void> _setEnabled(bool value) async {
+    if (_updating || value == _value) return;
+    final previous = _value;
+    setState(() {
+      _updating = true;
+      _setValue(value);
+    });
+    AppSettings.backgroundNotifier.rebuild();
+    try {
+      if (await settings.saveSettings()) return;
+      _setValue(previous);
+      AppSettings.backgroundNotifier.rebuild();
+      if (mounted) {
+        setState(() {});
+        showTextOnSnackBar('材质设置保存失败', variant: ToastVariant.error);
+      }
+    } finally {
+      if (mounted) setState(() => _updating = false);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return SettingsTile(
+      description: _description,
+      subtitle: _subtitle,
+      action: Switch(value: _value, onChanged: _updating ? null : _setEnabled),
     );
   }
 }
@@ -1679,7 +1753,7 @@ class _PlaybackTabContent extends StatelessWidget {
         _GroupEntry(
           icon: Symbols.play_circle,
           title: '播放行为',
-          subtitle: '音量增益与切歌过渡',
+          subtitle: '进度记忆、ReplayGain 与切歌过渡',
           groupId: 'playback-behavior',
         ),
         SizedBox(height: 8.0),
@@ -3195,6 +3269,13 @@ class _AboutTabContent extends StatelessWidget {
           icon: Symbols.build,
         ),
         SizedBox(height: 16.0),
+        _AboutLinkItem(
+          title: '交流群组',
+          url: 'https://t.me/+NsZamWiEKh5lOWNl',
+          actionLabel: '加入群组',
+          icon: Symbols.send,
+        ),
+        SizedBox(height: 16.0),
         CreateIssueTile(),
         _AboutContributorsSection(
           title: '主仓库贡献者',
@@ -3771,7 +3852,7 @@ const _settingsGroups = <String, _SettingsGroupDesc>{
   ),
   'appearance-background': _SettingsGroupDesc(
     '应用背景',
-    '窗口透明、背景图片、强度与模糊',
+    '窗口透明、背景图片、顶栏与侧栏材质',
     _AppearanceBackgroundGroup(),
   ),
   'appearance-list': _SettingsGroupDesc(
@@ -3816,7 +3897,7 @@ const _settingsGroups = <String, _SettingsGroupDesc>{
   ),
   'playback-behavior': _SettingsGroupDesc(
     '播放行为',
-    '音量增益与切歌过渡',
+    '进度记忆、ReplayGain 与切歌过渡',
     _PlaybackBehaviorGroup(),
   ),
   'playback-control': _SettingsGroupDesc(
@@ -3998,6 +4079,10 @@ class _AppearanceBackgroundGroup extends StatelessWidget {
         _SettingsSectionHeader('应用背景'),
         SizedBox(height: 4.0),
         _AppBackgroundControl(),
+        SizedBox(height: 16.0),
+        _ChromeFrostedSwitch(surface: _ChromeSurface.titleBar),
+        SizedBox(height: 16.0),
+        _ChromeFrostedSwitch(surface: _ChromeSurface.sidebar),
       ],
     );
   }
@@ -4079,8 +4164,8 @@ class _AlwaysShowNowPlayingControlsSwitchState
     return SettingsTile(
       description: '始终显示播放控件',
       subtitle: settings.alwaysShowNowPlayingControls
-          ? '播放页底部控件保持显示'
-          : '鼠标移入播放页底部时显示控件',
+          ? '播放页控件保持显示'
+          : '空闲时隐藏，鼠标移动后显示',
       action: Switch(
         value: settings.alwaysShowNowPlayingControls,
         onChanged: _setEnabled,
@@ -4387,6 +4472,8 @@ class _PlaybackBehaviorGroup extends StatelessWidget {
       children: const [
         _SettingsSectionHeader('播放行为'),
         SizedBox(height: 4.0),
+        RememberPlaybackPositionControl(),
+        SizedBox(height: 16.0),
         ReplayGainControl(),
         SizedBox(height: 16.0),
         TransitionControl(),
